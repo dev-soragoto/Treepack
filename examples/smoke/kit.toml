@@ -1,0 +1,130 @@
+[pack]
+name = "Smoke Kit"
+version = "2026.07.07"
+
+[paths]
+source = "."
+output = "../smoke-out"
+work = "../.treepack/work"
+
+[build]
+archive = "../smoke-{pack.version}.zip"
+build_info = "BUILD_INFO.txt"
+
+[layout]
+dirs = [
+  "empty/layout",
+]
+
+[resources]
+copy = "resources/sd"
+
+[[packages]]
+name = "Archive Asset"
+group = "core"
+required = true
+source = "file:fixtures/archive.zip"
+asset = "archive\\.zip"
+install = "extract"
+
+[[packages.steps]]
+op = "cp"
+from = "extract/archive.zip/overlay/."
+to = "output"
+required = true
+
+[[packages.steps]]
+op = "cp"
+from = "extract/archive.zip/app"
+to = "output/app"
+required = true
+
+[[packages.steps]]
+op = "cp_regex"
+from = "extract/archive.zip/folder"
+regex = "^app_payload.*\\.bin$"
+to = "output/bin"
+required = true
+
+[[packages.steps]]
+op = "cp"
+from = "output/bin/app_payload_1.0.bin"
+to = "output/bin/app-payload.bin"
+required = true
+
+[[packages.steps]]
+op = "rm"
+path = "output/bin/app_payload_1.0.bin"
+required = true
+
+[[packages.steps]]
+op = "cp"
+from = "extract/archive.zip/old.delete"
+to = "output/old.delete"
+required = true
+
+[[packages.steps]]
+op = "rm"
+path = "output/old.delete"
+required = true
+
+[[packages.steps]]
+op = "touch"
+path = "output/app/modules/module-a/state/enabled.flag"
+required = true
+
+[[packages.steps]]
+op = "touch"
+path = "output/READY.txt"
+required = true
+
+[[packages]]
+name = "Single File Asset"
+group = "core"
+required = true
+source = "file:fixtures/single.bin"
+asset = "single\\.bin"
+target = "bin/single.bin"
+
+[[packages]]
+name = "Multi Asset"
+group = "tools"
+required = true
+source = "file:fixtures/multi_src"
+
+[[packages.assets]]
+asset = "alpha\\.txt"
+target = "multi/alpha.txt"
+
+[[packages.assets]]
+asset = "beta\\.txt"
+target = "multi/beta.txt"
+
+[[packages]]
+name = "Optional Missing Step"
+group = "optional"
+required = false
+source = "file:fixtures/optional.txt"
+asset = "optional\\.txt"
+target = "optional/optional.txt"
+
+[[packages.steps]]
+op = "cp"
+from = "missing/optional.txt"
+to = "output/optional/missing.txt"
+required = false
+
+[verify]
+files = [
+  "bin/app-payload.bin",
+  "bin/single.bin",
+  "multi/alpha.txt",
+  "multi/beta.txt",
+  "config/resource.txt",
+  "app/modules/module-a/state/enabled.flag",
+  "READY.txt",
+]
+absent = [
+  "old.delete",
+  "overlay",
+]

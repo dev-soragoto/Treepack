@@ -1,0 +1,42 @@
+# Go build and test outputs
+/dist/
+*.test
+*.out
+coverage.out
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+.envrc
+*.local
+
+# Logs and temporary files
+*.log
+*.pid
+*.tmp
+*.temp
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Treepack generated outputs
+/output/
+/downloads/
+/description.txt
+/BUILD_INFO.txt
+examples/smoke/out/
+examples/smoke/smoke-*.zip
+examples/smoke-out/
+examples/smoke-*.zip
+examples/.treepack/
+
+# Keep checked-in fixture archives for offline smoke tests.
+!examples/smoke/fixtures/archive.zip
