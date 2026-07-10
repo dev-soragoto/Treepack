@@ -76,7 +76,7 @@ func cleanDir(path string) error {
 }
 
 // finalizeOutput writes staged output to the final output directory and optionally archives it.
-func finalizeOutput(m *manifest.Manifest, sourceDir, outputDir, workBase, runDir, stagedOutput string, fs fsAdapter, rep *report.BuildReport, logger *logging.Logger) (*report.BuildReport, error) {
+func finalizeOutput(m *manifest.Manifest, sourceDir, outputDir, workBase, runDir, stagedOutput string, fs fsAdapter, rep *report.BuildReport, logger *logging.Logger, rawArchive bool) (*report.BuildReport, error) {
 	archivePath := ""
 	if m.Build.Archive != "" {
 		archiveName, err := renderTemplate(m.Build.Archive, m.Pack.Name, m.Pack.Version)
@@ -104,7 +104,7 @@ func finalizeOutput(m *manifest.Manifest, sourceDir, outputDir, workBase, runDir
 		if logger != nil {
 			logger.Info("creating archive: %s", archivePath)
 		}
-		if err := archive.MakeZip(outputDir, archivePath); err != nil {
+		if err := archive.MakeZip(outputDir, archivePath, archive.Options{Raw: rawArchive}); err != nil {
 			return rep, err
 		}
 	}

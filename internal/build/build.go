@@ -20,6 +20,7 @@ type Options struct {
 	Output      string
 	WorkDir     string
 	KeepWork    bool
+	RawArchive  bool
 	Retries     int
 	GitHubToken string
 	Proxy       string
@@ -156,7 +157,7 @@ func Build(options Options) (*report.BuildReport, error) {
 	if rep.HasRequiredFailures() {
 		return rep, fmt.Errorf("required build step failed")
 	}
-	return finalizeOutput(m, sourceDir, outputDir, workBase, runDir, stagedOutput, fs, rep, logger)
+	return finalizeOutput(m, sourceDir, outputDir, workBase, runDir, stagedOutput, fs, rep, logger, options.RawArchive)
 }
 
 // usesGitHub 判断清单中是否包含 GitHub release 类型的包来源。

@@ -21,7 +21,7 @@ func TestMakeZipCreatesArchive(t *testing.T) {
 		t.Fatal(err)
 	}
 	archivePath := filepath.Join(root, "out.zip")
-	if err := MakeZip(source, archivePath); err != nil {
+	if err := MakeZip(source, archivePath, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	reader, err := zip.OpenReader(archivePath)
@@ -44,7 +44,7 @@ func TestMakeZipIncludesEmptyDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	archivePath := filepath.Join(root, "out.zip")
-	if err := MakeZip(source, archivePath); err != nil {
+	if err := MakeZip(source, archivePath, Options{}); err != nil {
 		t.Fatal(err)
 	}
 	reader, err := zip.OpenReader(archivePath)
@@ -70,7 +70,7 @@ func TestMakeZipRejectsExistingDirectory(t *testing.T) {
 	if err := os.MkdirAll(archivePath, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := MakeZip(source, archivePath); err == nil {
+	if err := MakeZip(source, archivePath, Options{}); err == nil {
 		t.Fatal("expected existing directory archive path to fail")
 	}
 }
@@ -91,7 +91,7 @@ func TestMakeZipRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(filepath.Join(source, "target.txt"), filepath.Join(source, "link.txt")); err != nil {
 		t.Fatal(err)
 	}
-	if err := MakeZip(source, filepath.Join(root, "out.zip")); err == nil {
+	if err := MakeZip(source, filepath.Join(root, "out.zip"), Options{}); err == nil {
 		t.Fatal("expected symlink in source tree to fail")
 	}
 }
@@ -100,7 +100,7 @@ func TestMakeZipRejectsSymlink(t *testing.T) {
 func TestWriteZipReturnsWriterCloseError(t *testing.T) {
 	source := t.TempDir()
 	writer := zip.NewWriter(errorWriter{})
-	err := writeZip(source, writer)
+	err := writeZip(source, writer, Options{})
 	if err == nil || !strings.Contains(err.Error(), "zip close failed") {
 		t.Fatalf("expected zip close error, got %v", err)
 	}
@@ -115,7 +115,7 @@ func TestMakeZipReturnsOutputCloseError(t *testing.T) {
 		return &closeFailWriter{name: filepath.Join(dir, "tmp.zip"), err: closeErr}, nil
 	}
 	defer func() { createArchiveFile = oldCreate }()
-	err := MakeZip(source, filepath.Join(t.TempDir(), "out.zip"))
+	err := MakeZip(source, filepath.Join(t.TempDir(), "out.zip"), Options{})
 	if !errors.Is(err, closeErr) {
 		t.Fatalf("expected output close error, got %v", err)
 	}
@@ -137,7 +137,7 @@ func TestMakeZipFailureDoesNotReplaceExistingArchive(t *testing.T) {
 		return &closeFailWriter{name: filepath.Join(dir, "tmp.zip"), err: errors.New("close failed")}, nil
 	}
 	defer func() { createArchiveFile = oldCreate }()
-	if err := MakeZip(source, archivePath); err == nil {
+	if err := MakeZip(source, archivePath, Options{}); err == nil {
 		t.Fatal("expected archive creation to fail")
 	}
 	data, err := os.ReadFile(archivePath)
@@ -146,6 +146,127 @@ func TestMakeZipFailureDoesNotReplaceExistingArchive(t *testing.T) {
 	}
 	if string(data) != "old" {
 		t.Fatalf("existing archive was replaced: %q", data)
+	}
+}
+
+// TestMakeZipSkipsDefaultMetadataEntries 验证默认归档会跳过常见系统元数据，但保留普通文件和空目录。
+func TestMakeZipSkipsDefaultMetadataEntries(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	for _, dir := range []string{
+		"keep-empty",
+		"nested/__MACOSX",
+		".AppleDouble",
+		"$RECYCLE.BIN",
+		"System Volume Information",
+		".Trash-1000",
+	} {
+		if err := os.MkdirAll(filepath.Join(source, filepath.FromSlash(dir)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for rel, body := range map[string]string{
+		"keep.txt":                        "keep",
+		"keep-empty/.keep":                "keep",
+		".DS_Store":                       "ds",
+		"._foo":                           "appledouble",
+		"Thumbs.db":                       "thumbs",
+		"ehthumbs.db":                     "thumbs",
+		"Desktop.ini":                     "desktop",
+		".directory":                      "directory",
+		"nested/__MACOSX/file.txt":        "macosx",
+		".AppleDouble/file.txt":           "appledouble",
+		"$RECYCLE.BIN/file.txt":           "recycle",
+		"System Volume Information/a.txt": "system",
+		".Trash-1000/file.txt":            "trash",
+		"metadata.DS_Store/file.txt":      "not substring",
+		"notes/Thumbs.db.backup":          "not exact",
+	} {
+		if err := os.MkdirAll(filepath.Dir(filepath.Join(source, filepath.FromSlash(rel))), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(source, filepath.FromSlash(rel)), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archivePath := filepath.Join(root, "out.zip")
+	if err := MakeZip(source, archivePath, Options{}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	seen := archiveEntrySet(reader.File)
+	for _, name := range []string{
+		"keep.txt",
+		"keep-empty/",
+		"keep-empty/.keep",
+		"metadata.DS_Store/",
+		"metadata.DS_Store/file.txt",
+		"notes/",
+		"notes/Thumbs.db.backup",
+	} {
+		if !seen[name] {
+			t.Fatalf("expected archive entry %s: %+v", name, seen)
+		}
+	}
+	for _, name := range []string{
+		".DS_Store",
+		"._foo",
+		"Thumbs.db",
+		"ehthumbs.db",
+		"Desktop.ini",
+		".directory",
+		"nested/__MACOSX/",
+		"nested/__MACOSX/file.txt",
+		".AppleDouble/",
+		".AppleDouble/file.txt",
+		"$RECYCLE.BIN/",
+		"$RECYCLE.BIN/file.txt",
+		"System Volume Information/",
+		"System Volume Information/a.txt",
+		".Trash-1000/",
+		".Trash-1000/file.txt",
+	} {
+		if seen[name] {
+			t.Fatalf("archive should skip %s: %+v", name, seen)
+		}
+	}
+}
+
+// TestMakeZipRawArchiveIncludesMetadataEntries 验证 raw 模式不应用默认系统元数据过滤。
+func TestMakeZipRawArchiveIncludesMetadataEntries(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "source")
+	if err := os.MkdirAll(filepath.Join(source, "__MACOSX"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for rel, body := range map[string]string{
+		".DS_Store":             "ds",
+		"._foo":                 "appledouble",
+		"Thumbs.db":             "thumbs",
+		"__MACOSX/metadata.txt": "metadata",
+	} {
+		if err := os.WriteFile(filepath.Join(source, filepath.FromSlash(rel)), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	archivePath := filepath.Join(root, "raw.zip")
+	if err := MakeZip(source, archivePath, Options{Raw: true}); err != nil {
+		t.Fatal(err)
+	}
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reader.Close()
+	seen := archiveEntrySet(reader.File)
+	for _, name := range []string{".DS_Store", "._foo", "Thumbs.db", "__MACOSX/", "__MACOSX/metadata.txt"} {
+		if !seen[name] {
+			t.Fatalf("expected raw archive entry %s: %+v", name, seen)
+		}
 	}
 }
 
@@ -298,6 +419,15 @@ func archiveEntryNames(files []*zip.File) []string {
 		names = append(names, file.Name)
 	}
 	return names
+}
+
+// archiveEntrySet 提取归档条目名称集合用于断言。
+func archiveEntrySet(files []*zip.File) map[string]bool {
+	seen := map[string]bool{}
+	for _, file := range files {
+		seen[file.Name] = true
+	}
+	return seen
 }
 
 // writeZipEntries 创建测试所需的 zip 归档内容。

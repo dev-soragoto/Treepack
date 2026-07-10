@@ -22,7 +22,7 @@ func TestMakeZipRejectsJunction(t *testing.T) {
 	}
 	createJunctionArchive(t, filepath.Join(source, "junction"), target)
 
-	if err := MakeZip(source, filepath.Join(root, "out.zip")); err == nil {
+	if err := MakeZip(source, filepath.Join(root, "out.zip"), Options{}); err == nil {
 		t.Fatal("expected junction in source tree to fail")
 	}
 }

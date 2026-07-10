@@ -19,6 +19,10 @@ type archiveOutput interface {
 	Name() string
 }
 
+type Options struct {
+	Raw bool
+}
+
 var createArchiveFile = func(dir, pattern string) (archiveOutput, error) {
 	return os.CreateTemp(dir, pattern)
 }
@@ -107,7 +111,7 @@ func ExtractZip(archivePath, outputDir string) error {
 }
 
 // MakeZip 从源目录创建 zip 归档，并通过临时文件保证失败时不替换既有归档。
-func MakeZip(sourceDir, archivePath string) error {
+func MakeZip(sourceDir, archivePath string, options Options) error {
 	archiveDir := filepath.Dir(archivePath)
 	if err := os.MkdirAll(archiveDir, 0o755); err != nil {
 		return err
@@ -129,7 +133,7 @@ func MakeZip(sourceDir, archivePath string) error {
 		}
 	}()
 	writer := zip.NewWriter(out)
-	writeErr := writeZip(sourceDir, writer)
+	writeErr := writeZip(sourceDir, writer, options)
 	closeErr := out.Close()
 	if writeErr != nil {
 		return writeErr
@@ -148,7 +152,7 @@ func MakeZip(sourceDir, archivePath string) error {
 }
 
 // writeZip 按稳定顺序把源目录中的普通文件和真实目录写入 zip writer。
-func writeZip(sourceDir string, writer *zip.Writer) error {
+func writeZip(sourceDir string, writer *zip.Writer, options Options) error {
 	var entries []archiveEntry
 	if err := filepath.WalkDir(sourceDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
@@ -160,6 +164,12 @@ func writeZip(sourceDir string, writer *zip.Writer) error {
 		_, kind, err := fsutil.ValidateEntry(path)
 		if err != nil {
 			return err
+		}
+		if !options.Raw && skipDefaultArchiveEntry(d.Name(), kind) {
+			if kind == fsutil.EntryDir {
+				return filepath.SkipDir
+			}
+			return nil
 		}
 		if kind == fsutil.EntryFile || kind == fsutil.EntryDir {
 			rel, err := filepath.Rel(sourceDir, path)
@@ -218,6 +228,25 @@ func writeZip(sourceDir string, writer *zip.Writer) error {
 // isRealDir 判断文件信息是否表示真实目录而不是其他目录类特殊项。
 func isRealDir(info os.FileInfo) bool {
 	return info.IsDir() && info.Mode()&os.ModeType == os.ModeDir
+}
+
+// skipDefaultArchiveEntry identifies common desktop metadata that should not be included in generated archives.
+func skipDefaultArchiveEntry(name string, kind fsutil.EntryKind) bool {
+	if kind == fsutil.EntryDir {
+		switch name {
+		case "__MACOSX", ".AppleDouble", "$RECYCLE.BIN", "System Volume Information":
+			return true
+		}
+		return strings.HasPrefix(name, ".Trash-")
+	}
+	if kind == fsutil.EntryFile {
+		switch name {
+		case ".DS_Store", "Thumbs.db", "ehthumbs.db", "Desktop.ini", ".directory":
+			return true
+		}
+		return strings.HasPrefix(name, "._")
+	}
+	return false
 }
 
 type archiveEntry struct {

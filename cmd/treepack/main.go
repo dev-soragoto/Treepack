@@ -36,6 +36,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	outputShort := fs.String("o", "", "output directory")
 	workDir := fs.String("work-dir", "", "work directory")
 	keepWork := fs.Bool("keep-work", false, "keep work directory")
+	rawArchive := fs.Bool("raw-archive", false, "include default metadata entries in generated archive")
 	proxy := fs.String("proxy", "", "proxy URL for downloads")
 	proxyShort := fs.String("p", "", "proxy URL for downloads")
 	githubToken := fs.String("github-token", "", "GitHub token for release API and asset downloads")
@@ -98,6 +99,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		Output:      *output,
 		WorkDir:     *workDir,
 		KeepWork:    *keepWork,
+		RawArchive:  *rawArchive,
 		Retries:     *downloadRetries,
 		GitHubToken: token,
 		Proxy:       *proxy,

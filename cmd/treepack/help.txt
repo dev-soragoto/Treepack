@@ -1,5 +1,5 @@
 Usage:
-  treepack [-c kit.toml] [-s DIR] [-o DIR] [--work-dir DIR] [--keep-work] [-p PROXY] [--download-retries N] [--github-token TOKEN] [-v] [-h]
+  treepack [-c kit.toml] [-s DIR] [-o DIR] [--work-dir DIR] [--keep-work] [--raw-archive] [-p PROXY] [--download-retries N] [--github-token TOKEN] [-v] [-h]
 
 Options:
   -c, --config kit.toml   Manifest path. Defaults to kit.toml.
@@ -7,6 +7,7 @@ Options:
   -o, --output DIR        Override paths.output from the manifest.
       --work-dir DIR      Override paths.work from the manifest.
       --keep-work         Keep the work run directory after the build.
+      --raw-archive       Include common OS desktop metadata in generated zip archives.
   -p, --proxy URL         Proxy for downloads. Supports http, https, socks5, and socks5h.
       --download-retries N
                            Total download attempts, including the first request. Defaults to 3.
@@ -34,7 +35,9 @@ Output:
   paths.output is a generated result directory. During publish, Treepack removes
   the existing output directory before writing the new result. It does not keep
   the previous output, run transactionally, or roll back after failures.
-  A zip archive is created only when [build].archive is set.
+  A zip archive is created only when [build].archive is set. Generated archives
+  skip common macOS, Windows, and Linux desktop metadata by default; this does
+  not change paths.output. Use --raw-archive to archive paths.output as-is.
 
 Exit codes:
   0  success, help, or version

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"os"
 	"path/filepath"
@@ -132,6 +133,41 @@ output = "OUT"
 	}
 }
 
+// TestRawArchiveFlagIncludesMetadata 验证 --raw-archive 会保留默认会被过滤的归档元数据。
+func TestRawArchiveFlagIncludesMetadata(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "src")
+	outputDir := filepath.Join(root, "out")
+	writeMainTestFile(t, filepath.Join(sourceDir, "resources", ".DS_Store"), "ds")
+	writeMainTestFile(t, filepath.Join(sourceDir, "resources", "__MACOSX", "metadata.txt"), "metadata")
+	writeMainTestFile(t, filepath.Join(root, "kit.toml"), `
+[pack]
+name = "Raw CLI"
+[paths]
+source = "SRC"
+output = "OUT"
+[build]
+archive = "raw-cli.zip"
+[resources]
+copy = "resources"
+`)
+	rewriteMainTestFile(t, filepath.Join(root, "kit.toml"), map[string]string{
+		"SRC": filepath.ToSlash(sourceDir),
+		"OUT": filepath.ToSlash(outputDir),
+	})
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--config", filepath.Join(root, "kit.toml"), "--raw-archive"}, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("expected code 0, got %d, stderr: %s", code, stderr.String())
+	}
+	seen := mainZipEntrySet(t, filepath.Join(root, "raw-cli.zip"))
+	for _, name := range []string{".DS_Store", "__MACOSX/", "__MACOSX/metadata.txt"} {
+		if !seen[name] {
+			t.Fatalf("raw archive missing metadata %s: %+v", name, seen)
+		}
+	}
+}
+
 // TestUnknownFlagReturnsUsageError 验证未知参数会返回参数错误。
 func TestUnknownFlagReturnsUsageError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -245,6 +281,7 @@ func assertHelpText(t *testing.T, body string) {
 		"-o, --output DIR",
 		"--work-dir DIR",
 		"--keep-work",
+		"--raw-archive",
 		"-p, --proxy URL",
 		"--download-retries N",
 		"--github-token TOKEN",
@@ -269,4 +306,19 @@ func assertHelpText(t *testing.T, body string) {
 			t.Fatalf("help output missing %q:\n%s", want, body)
 		}
 	}
+}
+
+// mainZipEntrySet 提取测试归档条目名称集合。
+func mainZipEntrySet(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	seen := map[string]bool{}
+	for _, f := range zr.File {
+		seen[f.Name] = true
+	}
+	return seen
 }

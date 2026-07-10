@@ -225,6 +225,73 @@ output = "OUTPUT"
 	}
 }
 
+// TestBuildArchiveFiltersMetadataWithoutChangingOutput 验证默认 ZIP 过滤系统元数据，但最终 output 目录保持原样。
+func TestBuildArchiveFiltersMetadataWithoutChangingOutput(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "src")
+	outputDir := filepath.Join(root, "out")
+	mustWriteBuildTest(t, filepath.Join(sourceDir, "resources", "keep.txt"), "keep")
+	mustWriteBuildTest(t, filepath.Join(sourceDir, "resources", ".DS_Store"), "ds")
+	mustWriteBuildTest(t, filepath.Join(sourceDir, "resources", "__MACOSX", "metadata.txt"), "metadata")
+	mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), `[pack]
+name = "Archive Filter"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[build]
+archive = "filtered.zip"
+[resources]
+copy = "resources"
+`)
+	rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+	if _, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	for _, rel := range []string{".DS_Store", "__MACOSX/metadata.txt"} {
+		if _, err := os.Stat(filepath.Join(outputDir, filepath.FromSlash(rel))); err != nil {
+			t.Fatalf("expected output metadata %s: %v", rel, err)
+		}
+	}
+	seen := buildZipEntrySet(t, filepath.Join(root, "filtered.zip"))
+	if !seen["keep.txt"] {
+		t.Fatalf("archive missing keep.txt: %+v", seen)
+	}
+	for _, name := range []string{".DS_Store", "__MACOSX/", "__MACOSX/metadata.txt"} {
+		if seen[name] {
+			t.Fatalf("archive should skip metadata %s: %+v", name, seen)
+		}
+	}
+}
+
+// TestBuildRawArchiveIncludesMetadata 验证 RawArchive 会按 output 目录原样归档系统元数据。
+func TestBuildRawArchiveIncludesMetadata(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "src")
+	outputDir := filepath.Join(root, "out")
+	mustWriteBuildTest(t, filepath.Join(sourceDir, "resources", ".DS_Store"), "ds")
+	mustWriteBuildTest(t, filepath.Join(sourceDir, "resources", "__MACOSX", "metadata.txt"), "metadata")
+	mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), `[pack]
+name = "Raw Archive"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[build]
+archive = "raw.zip"
+[resources]
+copy = "resources"
+`)
+	rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+	if _, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), RawArchive: true, Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	seen := buildZipEntrySet(t, filepath.Join(root, "raw.zip"))
+	for _, name := range []string{".DS_Store", "__MACOSX/", "__MACOSX/metadata.txt"} {
+		if !seen[name] {
+			t.Fatalf("raw archive missing metadata %s: %+v", name, seen)
+		}
+	}
+}
+
 // TestBuildRequiresSourceAndOutput 验证 source/output 必须由 TOML 或 CLI 提供。
 func TestBuildRequiresSourceAndOutput(t *testing.T) {
 	root := t.TempDir()
@@ -722,4 +789,19 @@ func makeTestZip(t *testing.T, path string, files map[string]string) {
 	if err := out.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// buildZipEntrySet 提取测试归档条目名称集合。
+func buildZipEntrySet(t *testing.T, path string) map[string]bool {
+	t.Helper()
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer zr.Close()
+	seen := map[string]bool{}
+	for _, f := range zr.File {
+		seen[f.Name] = true
+	}
+	return seen
 }
