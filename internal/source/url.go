@@ -3,6 +3,7 @@ package source
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"regexp"
@@ -12,7 +13,7 @@ import (
 )
 
 // resolveURL 从 url: 来源下载资源并校验可选的文件名匹配模式。
-func resolveURL(source, pattern, downloadDir, githubToken, proxy string, retries int, progress io.Writer, h Hasher) (ResolvedAsset, error) {
+func resolveURL(source, pattern, downloadDir, githubToken, proxy string, retries int, progress io.Writer, h Hasher, client *http.Client) (ResolvedAsset, error) {
 	rawURL := strings.TrimPrefix(source, "url:")
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -43,7 +44,7 @@ func resolveURL(source, pattern, downloadDir, githubToken, proxy string, retries
 	if err != nil {
 		return ResolvedAsset{}, err
 	}
-	if err := download(rawURL, target, headersForURL(rawURL, githubToken), proxy, retries, progress); err != nil {
+	if err := download(rawURL, target, headersForURL(rawURL, githubToken), proxy, retries, progress, client); err != nil {
 		return ResolvedAsset{}, err
 	}
 	sum, err := h.SHA256File(target)

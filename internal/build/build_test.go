@@ -2,6 +2,8 @@ package build
 
 import (
 	"archive/zip"
+	"crypto/sha256"
+	"encoding/hex"
 	"os"
 	"path/filepath"
 	"strings"
@@ -116,6 +118,128 @@ func TestSmokeBuild(t *testing.T) {
 	}
 	if seen["old.delete"] || seen["overlay/nested.txt"] {
 		t.Fatalf("zip contains files that should not be published: %+v", seen)
+	}
+}
+
+func TestBuildChecksumRequiredFailureBlocksOutput(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "src")
+	outputDir := filepath.Join(root, "out")
+	mustWriteBuildTest(t, filepath.Join(sourceDir, "asset.bin"), "asset")
+	mustWriteBuildTest(t, filepath.Join(outputDir, "old.txt"), "old")
+	mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), `[pack]
+name = "Checksum"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[[packages]]
+name = "Asset"
+source = "file:asset.bin"
+asset = "asset\\.bin"
+target = "asset.bin"
+sha256 = "`+strings.Repeat("0", 64)+`"
+`)
+	rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+	rep, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"})
+	if err == nil || !strings.Contains(err.Error(), "required build step failed") {
+		t.Fatalf("expected required checksum failure, got %v", err)
+	}
+	if rep == nil || len(rep.Failures) == 0 || !strings.Contains(rep.Failures[0], "sha256 mismatch") {
+		t.Fatalf("expected checksum failure in report, got %+v", rep)
+	}
+	assertFileContentBuild(t, filepath.Join(outputDir, "old.txt"), "old")
+}
+
+func TestBuildChecksumOptionalFailureContinues(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "src")
+	outputDir := filepath.Join(root, "out")
+	mustWriteBuildTest(t, filepath.Join(sourceDir, "bad.bin"), "bad")
+	mustWriteBuildTest(t, filepath.Join(sourceDir, "good.bin"), "good")
+	goodSum := sha256Hex("good")
+	mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), `[pack]
+name = "Checksum Optional"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[[packages]]
+name = "Bad"
+source = "file:bad.bin"
+asset = "bad\\.bin"
+required = false
+sha256 = "`+strings.Repeat("0", 64)+`"
+[[packages]]
+name = "Good"
+source = "file:good.bin"
+asset = "good\\.bin"
+target = "good.bin"
+sha256 = "`+goodSum+`"
+`)
+	rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+	rep, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Failures) == 0 || !strings.Contains(rep.Failures[0], "sha256 mismatch") {
+		t.Fatalf("expected optional checksum failure, got %+v", rep.Failures)
+	}
+	assertFileContentBuild(t, filepath.Join(outputDir, "good.bin"), "good")
+}
+
+func TestBuildRejectsSHA256ForDirectoryAsset(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "src")
+	outputDir := filepath.Join(root, "out")
+	mustWriteBuildTest(t, filepath.Join(sourceDir, "app", "run.txt"), "run")
+	mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), `[pack]
+name = "Dir Checksum"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[[packages]]
+name = "App"
+source = "file:app"
+sha256 = "`+strings.Repeat("1", 64)+`"
+`)
+	rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+	rep, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"})
+	if err == nil || !strings.Contains(err.Error(), "required build step failed") {
+		t.Fatalf("expected required package failure, got %v", err)
+	}
+	if rep == nil || len(rep.Failures) == 0 || !strings.Contains(rep.Failures[0], "sha256 is not supported for directory asset") {
+		t.Fatalf("expected directory sha256 failure, got %+v", rep)
+	}
+}
+
+func TestBuildArchiveFailurePreservesExistingOutput(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "src")
+	outputDir := filepath.Join(root, "out")
+	archivePath := filepath.Join(root, "pack.zip")
+	mustWriteBuildTest(t, filepath.Join(sourceDir, "resources", "new.txt"), "new")
+	mustWriteBuildTest(t, filepath.Join(outputDir, "old.txt"), "old")
+	if err := os.MkdirAll(archivePath+".tmp", 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteBuildTest(t, filepath.Join(archivePath+".tmp", "blocker"), "block")
+	mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), `[pack]
+name = "Archive Fail"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[build]
+archive = "ARCHIVE"
+[resources]
+copy = "resources"
+`)
+	rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+	rewriteMainTestFileForBuild(t, filepath.Join(root, "kit.toml"), "ARCHIVE", filepath.ToSlash(archivePath))
+	if _, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"}); err == nil {
+		t.Fatal("expected archive creation failure")
+	}
+	assertFileContentBuild(t, filepath.Join(outputDir, "old.txt"), "old")
+	if _, err := os.Stat(filepath.Join(outputDir, "new.txt")); !os.IsNotExist(err) {
+		t.Fatalf("new output should not be published after archive failure")
 	}
 }
 
@@ -738,6 +862,23 @@ func rewriteBuildManifestPaths(t *testing.T, path, sourceDir, outputDir string) 
 	if err := os.WriteFile(path, body, 0o644); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func rewriteMainTestFileForBuild(t *testing.T, path, old, newValue string) {
+	t.Helper()
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body = []byte(strings.ReplaceAll(string(body), old, newValue))
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sha256Hex(body string) string {
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
 }
 
 // mustWriteBuildTest 写入测试文件，失败时终止当前测试。

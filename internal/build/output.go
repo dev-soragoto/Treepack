@@ -78,6 +78,7 @@ func cleanDir(path string) error {
 // finalizeOutput writes staged output to the final output directory and optionally archives it.
 func finalizeOutput(m *manifest.Manifest, sourceDir, outputDir, workBase, runDir, stagedOutput string, fs fsAdapter, rep *report.BuildReport, logger *logging.Logger, rawArchive bool) (*report.BuildReport, error) {
 	archivePath := ""
+	tempArchivePath := ""
 	if m.Build.Archive != "" {
 		archiveName, err := renderTemplate(m.Build.Archive, m.Pack.Name, m.Pack.Version)
 		if err != nil {
@@ -88,6 +89,18 @@ func finalizeOutput(m *manifest.Manifest, sourceDir, outputDir, workBase, runDir
 			return rep, fmt.Errorf("invalid build.archive: %w", err)
 		}
 		if err := validateArchivePath(archivePath, sourceDir, outputDir, workBase, runDir, m.Path); err != nil {
+			return rep, err
+		}
+		if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
+			return rep, err
+		}
+		tempArchivePath = archivePath + ".tmp"
+		_ = os.Remove(tempArchivePath)
+		if logger != nil {
+			logger.Info("creating archive: %s", archivePath)
+		}
+		if err := archive.MakeZip(stagedOutput, tempArchivePath, archive.Options{Raw: rawArchive}); err != nil {
+			_ = os.Remove(tempArchivePath)
 			return rep, err
 		}
 	}
@@ -101,10 +114,12 @@ func finalizeOutput(m *manifest.Manifest, sourceDir, outputDir, workBase, runDir
 		return rep, err
 	}
 	if m.Build.Archive != "" {
-		if logger != nil {
-			logger.Info("creating archive: %s", archivePath)
+		if err := os.Remove(archivePath); err != nil && !os.IsNotExist(err) {
+			_ = os.Remove(tempArchivePath)
+			return rep, err
 		}
-		if err := archive.MakeZip(outputDir, archivePath, archive.Options{Raw: rawArchive}); err != nil {
+		if err := os.Rename(tempArchivePath, archivePath); err != nil {
+			_ = os.Remove(tempArchivePath)
 			return rep, err
 		}
 	}

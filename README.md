@@ -87,7 +87,7 @@ GitHub token 优先级：
 
 `paths.output`（以及 CLI 的 `-o` / `--output`）是构建结果目录，不是受保护的存储目录。一旦 Treepack 进入输出发布阶段，会先删除 output 中原有的全部内容，再写入本次构建结果。
 
-Treepack 不保留上一次成功构建的 output，也不提供事务、回滚或失败恢复。如果文件复制失败、归档失败或进程被中断，命令可能以失败状态退出，但 output 仍可能已被删除，或包含部分本次构建产生的文件和目录。不要将重要文件、手工维护的内容或唯一副本放在 output 中。
+Treepack 不保留上一次成功构建的 output，也不提供事务、回滚或失败恢复。配置了 archive 时会先从 staged output 创建临时 zip，zip 创建成功后才发布 final output；但如果 final output 发布、archive rename 或进程中断失败，命令可能以失败状态退出，output 仍可能已被删除，或包含部分本次构建产生的文件和目录。不要将重要文件、手工维护的内容或唯一副本放在 output 中。
 
 Treepack 主要保证文件内容、目录结构、覆盖语义、路径边界和 ZIP 结构安全。它不限制下载大小、ZIP 解压大小、ZIP entry 数量、压缩比、磁盘占用或耗时；磁盘空间、资源可信度和运行环境容量由使用者自行控制。
 
@@ -186,6 +186,7 @@ required = true
 source = "file:fixtures/payload.bin"
 asset = 'payload\.bin'
 target = "bin/payload.bin"
+sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 [[packages.steps]]
 op = "touch"
@@ -221,6 +222,8 @@ file:resources/local_dir
 - `github:owner/repo@tag`：读取指定 release tag。
 - `url:`：直接从指定 HTTP 或 HTTPS 链接下载文件。
 - `file:`：读取本地文件或目录。
+
+GitHub release asset 当前仅保证公开 release asset 下载。`--github-token` / `GITHUB_TOKEN` 会用于 release API 请求；私有仓库 release asset 的专用下载流程暂不作为兼容承诺。
 
 `file:` 路径从 `paths.source` 解析，并且必须留在 `paths.source` 内。`file:` 指向目录且不写 `asset` / `assets` 时，整个目录会作为一个目录资产安装。`file:` 指向目录且写了 `asset` / `assets` 时，该目录会作为资产池，正则只匹配直接子项名称，匹配结果可以是文件或目录，但必须唯一。
 
@@ -289,7 +292,10 @@ source = "github:owner/repo"
 asset = 'payload\.bin'
 target = "bin/payload.bin"
 required = true
+sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 ```
+
+`sha256` 是可选 checksum pin，值必须是 64 位十六进制字符串。它校验下载或复制后的原始 asset 文件；不会校验安装后的目标文件，也不支持目录资产。
 
 只解压 zip，不安装任何文件到输出：
 
@@ -330,10 +336,12 @@ required = false
 [[packages.assets]]
 asset = 'tool-a\.bin'
 target = "tools/a.bin"
+sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 
 [[packages.assets]]
 asset = 'tool-b\.bin'
 target = "tools/b.bin"
+sha256 = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210"
 ```
 
 如果多个 asset 里既有 zip 又有单文件，可以只给 zip 那一项写 `install = "extract"`：

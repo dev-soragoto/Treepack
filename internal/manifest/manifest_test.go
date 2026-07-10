@@ -1,8 +1,10 @@
 package manifest
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -29,6 +31,36 @@ asset = "asset\\.bin"
 	}
 	if m.Packages[0].Group != "default" || !m.Packages[0].IsRequired() {
 		t.Fatalf("package defaults not applied: %+v", m.Packages[0])
+	}
+}
+
+func TestLoadAcceptsSHA256Pins(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kit.toml")
+	sum := strings.Repeat("a", 64)
+	if err := os.WriteFile(path, []byte(`
+[pack]
+name = "Demo"
+[[packages]]
+name = "Single"
+source = "file:asset.bin"
+asset = "asset\\.bin"
+sha256 = "`+sum+`"
+[[packages]]
+name = "Multi"
+source = "file:."
+[[packages.assets]]
+asset = "a\\.bin"
+sha256 = "`+sum+`"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Packages[0].SHA256 != sum || m.Packages[1].Assets[0].SHA256 != sum {
+		t.Fatalf("sha256 pins not loaded: %+v", m.Packages)
 	}
 }
 
@@ -59,6 +91,45 @@ required = true
 		if _, err := Load(path); err == nil {
 			t.Fatalf("expected unknown key error for:\n%s", body)
 		}
+	}
+}
+
+func TestLoadRejectsInvalidSHA256(t *testing.T) {
+	tests := []string{
+		`[pack]
+name = "Demo"
+[[packages]]
+name = "Bad"
+source = "file:x"
+asset = "x"
+sha256 = "not-hex"
+`,
+		`[pack]
+name = "Demo"
+[[packages]]
+name = "Bad"
+source = "file:x"
+[[packages.assets]]
+asset = "x"
+sha256 = "` + strings.Repeat("g", 64) + `"
+`,
+	}
+	for _, body := range tests {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "kit.toml")
+		if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Fatalf("expected invalid sha256 error for:\n%s", body)
+		}
+	}
+}
+
+func TestLoadManifestNotFoundSentinel(t *testing.T) {
+	_, err := Load(filepath.Join(t.TempDir(), "missing.toml"))
+	if !errors.Is(err, ErrManifestNotFound) {
+		t.Fatalf("expected ErrManifestNotFound, got %v", err)
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,33 +18,63 @@ import (
 	"treepack/internal/source"
 )
 
+type installRequest struct {
+	Package     manifest.PackageConfig
+	SourceDir   string
+	DownloadDir string
+	PackageDir  string
+	Token       string
+	Proxy       string
+	Retries     int
+	Progress    io.Writer
+	HTTPClient  *http.Client
+	FS          fsAdapter
+	Record      *report.PackageRecord
+	Report      *report.BuildReport
+	Logger      *logging.Logger
+}
+
 // installPackage 解析包资源、安装资源并执行该包的构建步骤。
-func installPackage(pkg manifest.PackageConfig, sourceDir, downloadDir, packageDir, token, proxy string, retries int, progress io.Writer, fs fsAdapter, record *report.PackageRecord, rep *report.BuildReport, logger *logging.Logger) (string, error) {
+func installPackage(req installRequest) (string, error) {
+	pkg := req.Package
+	fs := req.FS
+	packageDir := req.PackageDir
 	packageOutputDir := filepath.Join(packageDir, "output")
 	if err := os.MkdirAll(packageOutputDir, 0o755); err != nil {
 		return "", err
 	}
 	assetConfigs := packageAssets(pkg)
-	patterns := make([]string, 0, len(assetConfigs))
+	assetRequests := make([]source.AssetRequest, 0, len(assetConfigs))
 	for _, assetConfig := range assetConfigs {
-		patterns = append(patterns, assetConfig.Asset)
+		assetRequests = append(assetRequests, source.AssetRequest{Pattern: assetConfig.Asset, SHA256: assetConfig.SHA256})
 	}
-	resolvedAssets, err := source.ResolveAssets(pkg.Source, patterns, sourceDir, downloadDir, token, proxy, retries, progress, fs)
+	resolvedAssets, err := source.ResolveAssetRequests(source.ResolveRequest{
+		Source:      pkg.Source,
+		Assets:      assetRequests,
+		Root:        req.SourceDir,
+		DownloadDir: req.DownloadDir,
+		GitHubToken: req.Token,
+		Proxy:       req.Proxy,
+		Retries:     req.Retries,
+		Progress:    req.Progress,
+		Hasher:      fs,
+		HTTPClient:  req.HTTPClient,
+	})
 	if err != nil {
 		return "", err
 	}
 	extractNames := map[string]string{}
 	for i, assetConfig := range assetConfigs {
 		resolved := resolvedAssets[i]
-		record.Assets = append(record.Assets, resolved)
-		if err := installAsset(resolved, assetConfig, packageDir, packageOutputDir, extractNames, fs, logger); err != nil {
+		req.Record.Assets = append(req.Record.Assets, resolved)
+		if err := installAsset(resolved, assetConfig, packageDir, packageOutputDir, extractNames, fs, req.Logger); err != nil {
 			return "", err
 		}
 	}
 	for _, step := range pkg.Steps {
 		result := ops.Run(step, packageDir, fs)
-		rep.AddOperation(result)
-		logOperation(result, logger)
+		req.Report.AddOperation(result)
+		logOperation(result, req.Logger)
 		if result.FailedRequired() {
 			return "", errors.New(result.Message)
 		}
@@ -57,7 +88,7 @@ func packageAssets(pkg manifest.PackageConfig) []manifest.AssetConfig {
 		return pkg.Assets
 	}
 	return []manifest.AssetConfig{{
-		Asset: pkg.Asset, Target: pkg.Target, Install: pkg.Install,
+		Asset: pkg.Asset, Target: pkg.Target, Install: pkg.Install, SHA256: pkg.SHA256,
 	}}
 }
 

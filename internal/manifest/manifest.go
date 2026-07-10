@@ -1,14 +1,16 @@
 package manifest
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
 
-	"github.com/BurntSushi/toml"
 	"treepack/internal/ops"
+
+	"github.com/BurntSushi/toml"
 )
 
 type PackConfig struct {
@@ -40,6 +42,7 @@ type AssetConfig struct {
 	Asset   string `toml:"asset"`
 	Target  string `toml:"target"`
 	Install string `toml:"install"`
+	SHA256  string `toml:"sha256"`
 }
 
 type PackageConfig struct {
@@ -50,6 +53,7 @@ type PackageConfig struct {
 	Asset    string                `toml:"asset"`
 	Target   string                `toml:"target"`
 	Install  string                `toml:"install"`
+	SHA256   string                `toml:"sha256"`
 	Assets   []AssetConfig         `toml:"assets"`
 	Steps    []ops.OperationConfig `toml:"steps"`
 }
@@ -76,6 +80,8 @@ type Manifest struct {
 	Verify    VerifyConfig    `toml:"verify"`
 }
 
+var ErrManifestNotFound = errors.New("manifest not found")
+
 // Load 读取 TOML 清单、填充默认值并执行结构校验。
 func Load(path string) (*Manifest, error) {
 	abs, err := filepath.Abs(path)
@@ -83,7 +89,10 @@ func Load(path string) (*Manifest, error) {
 		return nil, err
 	}
 	if _, err := os.Stat(abs); err != nil {
-		return nil, fmt.Errorf("cannot read manifest: %s", abs)
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("cannot read manifest: %s: %w", abs, ErrManifestNotFound)
+		}
+		return nil, fmt.Errorf("cannot read manifest: %s: %w", abs, err)
 	}
 	var m Manifest
 	md, err := toml.DecodeFile(abs, &m)
@@ -126,11 +135,14 @@ func validatePackage(p *PackageConfig, index int) error {
 	if p.Install != "" && p.Install != "extract" {
 		return fmt.Errorf("%s.install only supports 'extract'", ctx)
 	}
+	if err := validateSHA256(p.SHA256); err != nil {
+		return fmt.Errorf("%s.sha256 %w", ctx, err)
+	}
 	if len(p.Assets) > 0 && p.Asset != "" {
 		return fmt.Errorf("%s cannot declare both asset and assets", ctx)
 	}
-	if len(p.Assets) > 0 && (p.Target != "" || p.Install != "") {
-		return fmt.Errorf("%s target/install cannot be used with assets", ctx)
+	if len(p.Assets) > 0 && (p.Target != "" || p.Install != "" || p.SHA256 != "") {
+		return fmt.Errorf("%s target/install/sha256 cannot be used with assets", ctx)
 	}
 	if p.Asset == "" && len(p.Assets) == 0 && (strings.HasPrefix(p.Source, "github:") || strings.HasPrefix(p.Source, "url:")) {
 		return fmt.Errorf("%s needs asset or assets for github/url source", ctx)
@@ -150,11 +162,30 @@ func validatePackage(p *PackageConfig, index int) error {
 		if asset.Install != "" && asset.Install != "extract" {
 			return fmt.Errorf("%s.assets[%d].install only supports 'extract'", ctx, i+1)
 		}
+		if err := validateSHA256(asset.SHA256); err != nil {
+			return fmt.Errorf("%s.assets[%d].sha256 %w", ctx, i+1, err)
+		}
 	}
 	for i, op := range p.Steps {
 		if err := ops.ValidateOperation(op, fmt.Sprintf("%s.steps[%d]", ctx, i+1)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validateSHA256(value string) error {
+	if value == "" {
+		return nil
+	}
+	if len(value) != 64 {
+		return fmt.Errorf("must be a 64-character hex string")
+	}
+	for _, ch := range value {
+		if ch >= '0' && ch <= '9' || ch >= 'a' && ch <= 'f' || ch >= 'A' && ch <= 'F' {
+			continue
+		}
+		return fmt.Errorf("must be a 64-character hex string")
 	}
 	return nil
 }

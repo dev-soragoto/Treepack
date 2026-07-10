@@ -2,15 +2,16 @@ package main
 
 import (
 	_ "embed"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
-	"strings"
 
 	"treepack/internal/build"
 	"treepack/internal/logging"
+	"treepack/internal/manifest"
 )
 
 var version = "dev"
@@ -28,31 +29,42 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs := flag.NewFlagSet("treepack", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { usage(stderr) }
-	config := fs.String("config", "kit.toml", "path to kit.toml")
-	configShort := fs.String("c", "", "path to kit.toml")
-	source := fs.String("source", "", "source directory")
-	sourceShort := fs.String("s", "", "source directory")
-	output := fs.String("output", "", "output directory")
-	outputShort := fs.String("o", "", "output directory")
-	workDir := fs.String("work-dir", "", "work directory")
-	keepWork := fs.Bool("keep-work", false, "keep work directory")
-	rawArchive := fs.Bool("raw-archive", false, "include default metadata entries in generated archive")
-	proxy := fs.String("proxy", "", "proxy URL for downloads")
-	proxyShort := fs.String("p", "", "proxy URL for downloads")
-	githubToken := fs.String("github-token", "", "GitHub token for release API and asset downloads")
-	downloadRetries := fs.Int("download-retries", 3, "total download attempts including the first request")
-	showVersion := fs.Bool("version", false, "show version")
-	showVersionShort := fs.Bool("v", false, "show version")
-	showHelp := fs.Bool("help", false, "show help")
-	showHelpShort := fs.Bool("h", false, "show help")
+	config := "kit.toml"
+	source := ""
+	output := ""
+	workDir := ""
+	keepWork := false
+	rawArchive := false
+	proxy := ""
+	githubToken := ""
+	downloadRetries := 3
+	showVersion := false
+	showHelp := false
+	fs.StringVar(&config, "config", config, "path to kit.toml")
+	fs.StringVar(&config, "c", config, "path to kit.toml")
+	fs.StringVar(&source, "source", source, "source directory")
+	fs.StringVar(&source, "s", source, "source directory")
+	fs.StringVar(&output, "output", output, "output directory")
+	fs.StringVar(&output, "o", output, "output directory")
+	fs.StringVar(&workDir, "work-dir", workDir, "work directory")
+	fs.BoolVar(&keepWork, "keep-work", keepWork, "keep work directory")
+	fs.BoolVar(&rawArchive, "raw-archive", rawArchive, "include default metadata entries in generated archive")
+	fs.StringVar(&proxy, "proxy", proxy, "proxy URL for downloads")
+	fs.StringVar(&proxy, "p", proxy, "proxy URL for downloads")
+	fs.StringVar(&githubToken, "github-token", githubToken, "GitHub token for release API and asset downloads")
+	fs.IntVar(&downloadRetries, "download-retries", downloadRetries, "total download attempts including the first request")
+	fs.BoolVar(&showVersion, "version", showVersion, "show version")
+	fs.BoolVar(&showVersion, "v", showVersion, "show version")
+	fs.BoolVar(&showHelp, "help", showHelp, "show help")
+	fs.BoolVar(&showHelp, "h", showHelp, "show help")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *showHelp || *showHelpShort {
+	if showHelp {
 		usage(stdout)
 		return 0
 	}
-	if *showVersion || *showVersionShort {
+	if showVersion {
 		fmt.Fprintf(stdout, "treepack %s\n", version)
 		return 0
 	}
@@ -61,32 +73,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		usage(stderr)
 		return 2
 	}
-	if *configShort != "" {
-		*config = *configShort
-	}
-	if *sourceShort != "" {
-		*source = *sourceShort
-	}
-	if *outputShort != "" {
-		*output = *outputShort
-	}
-	if *proxyShort != "" {
-		*proxy = *proxyShort
-	}
-	if *proxy != "" {
-		if err := validateProxy(*proxy); err != nil {
+	if proxy != "" {
+		if err := validateProxy(proxy); err != nil {
 			fmt.Fprintf(stderr, "treepack: invalid proxy: %s\n", err)
 			usage(stderr)
 			return 2
 		}
 	}
-	if *downloadRetries < 1 {
+	if downloadRetries < 1 {
 		fmt.Fprintf(stderr, "treepack: invalid download retries: must be at least 1\n")
 		usage(stderr)
 		return 2
 	}
-	configPath := *config
-	token := *githubToken
+	token := githubToken
 	if token == "" {
 		token = os.Getenv("GITHUB_TOKEN")
 	}
@@ -94,22 +93,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 		token = os.Getenv("GH_TOKEN")
 	}
 	rep, err := build.Build(build.Options{
-		ConfigPath:  configPath,
-		Source:      *source,
-		Output:      *output,
-		WorkDir:     *workDir,
-		KeepWork:    *keepWork,
-		RawArchive:  *rawArchive,
-		Retries:     *downloadRetries,
+		ConfigPath:  config,
+		Source:      source,
+		Output:      output,
+		WorkDir:     workDir,
+		KeepWork:    keepWork,
+		RawArchive:  rawArchive,
+		Retries:     downloadRetries,
 		GitHubToken: token,
-		Proxy:       *proxy,
+		Proxy:       proxy,
 		Version:     version,
 		Logger:      logging.New(stderr),
 		Progress:    stderr,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "treepack: %s\n", err)
-		if strings.Contains(err.Error(), "cannot read manifest:") {
+		if errors.Is(err, manifest.ErrManifestNotFound) {
 			usage(stderr)
 		}
 		return 1

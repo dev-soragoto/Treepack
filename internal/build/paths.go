@@ -9,6 +9,14 @@ import (
 	"treepack/internal/manifest"
 )
 
+type ResolvedPaths struct {
+	Source   string
+	Output   string
+	WorkBase string
+	RunDir   string
+	KeepWork bool
+}
+
 // resolveBuildPaths 解析构建涉及的源目录、输出目录、工作目录和保留策略。
 func resolveBuildPaths(m *manifest.Manifest, options Options) (sourceDir, outputDir, workDir string, keepWork bool, err error) {
 	manifestDir := filepath.Dir(m.Path)

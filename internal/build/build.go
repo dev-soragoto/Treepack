@@ -3,6 +3,7 @@ package build
 import (
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"treepack/internal/manifest"
 	"treepack/internal/ops"
 	"treepack/internal/report"
+	"treepack/internal/source"
 	"treepack/internal/verify"
 )
 
@@ -51,39 +53,41 @@ func Build(options Options) (*report.BuildReport, error) {
 	if err != nil {
 		return rep, err
 	}
-	m.Paths.Source = sourceDir
-	m.Paths.Output = outputDir
-	m.Paths.Work = workBase
-	m.Build.KeepWork = keepWork
+	paths := ResolvedPaths{Source: sourceDir, Output: outputDir, WorkBase: workBase, KeepWork: keepWork}
+	m.Paths.Source = paths.Source
+	m.Paths.Output = paths.Output
+	m.Paths.Work = paths.WorkBase
+	m.Build.KeepWork = paths.KeepWork
 	if logger != nil {
-		logger.Info("source dir: %s", sourceDir)
-		logger.Info("output dir: %s", outputDir)
+		logger.Info("source dir: %s", paths.Source)
+		logger.Info("output dir: %s", paths.Output)
 	}
-	runDir, err := createRunDir(workBase)
+	runDir, err := createRunDir(paths.WorkBase)
 	if err != nil {
 		return rep, err
 	}
-	m.Paths.Work = runDir
+	paths.RunDir = runDir
+	m.Paths.Work = paths.RunDir
 	if logger != nil {
-		logger.Info("work dir: %s", runDir)
+		logger.Info("work dir: %s", paths.RunDir)
 	}
-	if err := validateRunDir(runDir, sourceDir, outputDir); err != nil {
-		_ = os.RemoveAll(runDir)
+	if err := validateRunDir(paths.RunDir, paths.Source, paths.Output); err != nil {
+		_ = os.RemoveAll(paths.RunDir)
 		return rep, err
 	}
 	defer func() {
-		if keepWork {
+		if paths.KeepWork {
 			if logger != nil {
-				logger.Warn("keeping work dir: %s", runDir)
+				logger.Warn("keeping work dir: %s", paths.RunDir)
 			}
 			return
 		}
 		if logger != nil {
-			logger.Info("cleaning work dir: %s", runDir)
+			logger.Info("cleaning work dir: %s", paths.RunDir)
 		}
-		_ = os.RemoveAll(runDir)
+		_ = os.RemoveAll(paths.RunDir)
 	}()
-	stagedOutput := filepath.Join(runDir, "output")
+	stagedOutput := filepath.Join(paths.RunDir, "output")
 	if err := cleanDir(stagedOutput); err != nil {
 		return rep, err
 	}
@@ -91,18 +95,40 @@ func Build(options Options) (*report.BuildReport, error) {
 		logger.Info("github token not configured; using anonymous requests")
 	}
 	fs := fsAdapter{}
+	var httpClient *http.Client
+	if usesHTTP(m) {
+		client, err := source.NewHTTPClient(options.Proxy)
+		if err != nil {
+			return rep, err
+		}
+		httpClient = client
+	}
 	for i, pkg := range m.Packages {
 		if logger != nil {
 			logger.Info("resolving package: %s", pkg.Name)
 		}
 		record := report.PackageRecord{Package: pkg}
-		packageDir := filepath.Join(runDir, "packages", fmt.Sprintf("%03d-%s", i+1, safeName(pkg.Name)))
-		downloadDir := filepath.Join(runDir, "downloads", fmt.Sprintf("%03d-%s", i+1, safeName(pkg.Name)))
+		packageDir := filepath.Join(paths.RunDir, "packages", fmt.Sprintf("%03d-%s", i+1, safeName(pkg.Name)))
+		downloadDir := filepath.Join(paths.RunDir, "downloads", fmt.Sprintf("%03d-%s", i+1, safeName(pkg.Name)))
 		if logger != nil {
 			logger.Info("package staging: %s", packageDir)
 			logger.Info("package downloads: %s", downloadDir)
 		}
-		packageOutputDir, err := installPackage(pkg, sourceDir, downloadDir, packageDir, options.GitHubToken, options.Proxy, options.Retries, options.Progress, fs, &record, rep, logger)
+		packageOutputDir, err := installPackage(installRequest{
+			Package:     pkg,
+			SourceDir:   paths.Source,
+			DownloadDir: downloadDir,
+			PackageDir:  packageDir,
+			Token:       options.GitHubToken,
+			Proxy:       options.Proxy,
+			Retries:     options.Retries,
+			Progress:    options.Progress,
+			HTTPClient:  httpClient,
+			FS:          fs,
+			Record:      &record,
+			Report:      rep,
+			Logger:      logger,
+		})
 		if err != nil {
 			record.OK = false
 			record.Message = err.Error()
@@ -132,7 +158,7 @@ func Build(options Options) (*report.BuildReport, error) {
 		if err := createLayout(m, stagedOutput); err != nil {
 			return rep, err
 		}
-		copyResources(m, sourceDir, stagedOutput, fs, rep, logger)
+		copyResources(m, paths.Source, stagedOutput, fs, rep, logger)
 		if logger != nil {
 			logger.Info("running verification")
 		}
@@ -157,13 +183,23 @@ func Build(options Options) (*report.BuildReport, error) {
 	if rep.HasRequiredFailures() {
 		return rep, fmt.Errorf("required build step failed")
 	}
-	return finalizeOutput(m, sourceDir, outputDir, workBase, runDir, stagedOutput, fs, rep, logger, options.RawArchive)
+	return finalizeOutput(m, paths.Source, paths.Output, paths.WorkBase, paths.RunDir, stagedOutput, fs, rep, logger, options.RawArchive)
 }
 
 // usesGitHub 判断清单中是否包含 GitHub release 类型的包来源。
 func usesGitHub(m *manifest.Manifest) bool {
 	for _, pkg := range m.Packages {
 		if strings.HasPrefix(pkg.Source, "github:") {
+			return true
+		}
+	}
+	return false
+}
+
+// usesHTTP 判断清单中是否包含需要 HTTP 客户端的包来源。
+func usesHTTP(m *manifest.Manifest) bool {
+	for _, pkg := range m.Packages {
+		if strings.HasPrefix(pkg.Source, "github:") || strings.HasPrefix(pkg.Source, "url:") {
 			return true
 		}
 	}

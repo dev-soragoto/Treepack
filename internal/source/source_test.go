@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"treepack/internal/fsutil"
 )
@@ -128,6 +129,59 @@ func TestResolveAssetsRejectsDuplicateURLFile(t *testing.T) {
 	_, err := ResolveAssets("url:"+server.URL+"/payload.bin", []string{`payload\.bin`, `^payload\.bin$`}, t.TempDir(), filepath.Join(t.TempDir(), "downloads"), "", "", 3, io.Discard, testHasher{})
 	if err == nil || !strings.Contains(err.Error(), "multiple asset patterns resolved to the same file") {
 		t.Fatalf("expected duplicate resolved asset error, got %v", err)
+	}
+}
+
+func TestResolveAssetRequestsValidatesSHA256(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "asset.bin"), []byte("asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := ResolveAssetRequests(ResolveRequest{
+		Source:      "file:asset.bin",
+		Assets:      []AssetRequest{{Pattern: "asset\\.bin", SHA256: "sha"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+		Retries:     1,
+		Progress:    io.Discard,
+		Hasher:      testHasher{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(resolved) != 1 || resolved[0].SHA256 != "sha" {
+		t.Fatalf("unexpected resolved assets: %+v", resolved)
+	}
+	_, err = ResolveAssetRequests(ResolveRequest{
+		Source:      "file:asset.bin",
+		Assets:      []AssetRequest{{Pattern: "asset\\.bin", SHA256: strings.Repeat("0", 64)}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads2"),
+		Retries:     1,
+		Progress:    io.Discard,
+		Hasher:      testHasher{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "sha256 mismatch") {
+		t.Fatalf("expected checksum mismatch, got %v", err)
+	}
+}
+
+func TestResolveAssetRequestsRejectsDirectorySHA256(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "app"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, err := ResolveAssetRequests(ResolveRequest{
+		Source:      "file:app",
+		Assets:      []AssetRequest{{SHA256: strings.Repeat("1", 64)}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+		Retries:     1,
+		Progress:    io.Discard,
+		Hasher:      testHasher{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "sha256 is not supported for directory asset") {
+		t.Fatalf("expected directory sha256 error, got %v", err)
 	}
 }
 
@@ -354,6 +408,21 @@ func TestDownloadRetriesTwoSucceedsAfterOneRetry(t *testing.T) {
 	}
 }
 
+func TestRetryAfterCapRejectsLongSleeps(t *testing.T) {
+	resp := &http.Response{Header: http.Header{"Retry-After": []string{"121"}}}
+	if _, err := retryDelay(resp); err == nil {
+		t.Fatal("expected retry-after cap error")
+	}
+	resp = &http.Response{Header: http.Header{"Retry-After": []string{"120"}}}
+	delay, err := retryDelay(resp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if delay != 120*time.Second {
+		t.Fatalf("delay = %s, want 120s", delay)
+	}
+}
+
 // TestResolveGitHubAPIErrors 验证对应场景的行为。
 func TestResolveGitHubAPIErrors(t *testing.T) {
 	tests := []struct {
@@ -442,7 +511,9 @@ func TestResolveGitHubUsesRetryCountForAPIAndAsset(t *testing.T) {
 				http.Error(w, "busy", http.StatusServiceUnavailable)
 				return
 			}
-			fmt.Fprintf(w, `{"tag_name":"v1","assets":[{"name":"asset.zip","browser_download_url":%q}]}`, serverURL+"/asset.zip")
+			fmt.Fprintf(w, `{"id":1,"tag_name":"v1"}`)
+		case r.URL.Path == "/repos/owner/repo/releases/1/assets":
+			fmt.Fprintf(w, `[{"name":"asset.zip","browser_download_url":%q}]`, serverURL+"/asset.zip")
 		case r.URL.Path == "/asset.zip":
 			assetAttempts++
 			if assetAttempts == 1 {
@@ -477,7 +548,9 @@ func TestResolveGitHubAssetsResolveReleaseOnce(t *testing.T) {
 		switch {
 		case strings.Contains(r.URL.Path, "/releases/latest"):
 			apiAttempts++
-			fmt.Fprintf(w, `{"tag_name":"v1","assets":[{"name":"tool-a.bin","browser_download_url":%q},{"name":"tool-b.bin","browser_download_url":%q}]}`, serverURL+"/tool-a.bin", serverURL+"/tool-b.bin")
+			fmt.Fprintf(w, `{"id":1,"tag_name":"v1"}`)
+		case r.URL.Path == "/repos/owner/repo/releases/1/assets":
+			fmt.Fprintf(w, `[{"name":"tool-a.bin","browser_download_url":%q},{"name":"tool-b.bin","browser_download_url":%q}]`, serverURL+"/tool-a.bin", serverURL+"/tool-b.bin")
 		case r.URL.Path == "/tool-a.bin" || r.URL.Path == "/tool-b.bin":
 			assetAttempts++
 			_, _ = w.Write([]byte("asset"))
@@ -511,10 +584,12 @@ func TestResolveGitHubAssetsDoNotMixLatestReleaseChanges(t *testing.T) {
 		case strings.Contains(r.URL.Path, "/releases/latest"):
 			apiAttempts++
 			if apiAttempts == 1 {
-				fmt.Fprintf(w, `{"tag_name":"v1","assets":[{"name":"tool-a-v1.bin","browser_download_url":%q},{"name":"tool-b-v1.bin","browser_download_url":%q}]}`, serverURL+"/tool-a-v1.bin", serverURL+"/tool-b-v1.bin")
+				fmt.Fprintf(w, `{"id":1,"tag_name":"v1"}`)
 				return
 			}
-			fmt.Fprintf(w, `{"tag_name":"v2","assets":[{"name":"tool-a-v2.bin","browser_download_url":%q},{"name":"tool-b-v2.bin","browser_download_url":%q}]}`, serverURL+"/tool-a-v2.bin", serverURL+"/tool-b-v2.bin")
+			fmt.Fprintf(w, `{"id":2,"tag_name":"v2"}`)
+		case r.URL.Path == "/repos/owner/repo/releases/1/assets":
+			fmt.Fprintf(w, `[{"name":"tool-a-v1.bin","browser_download_url":%q},{"name":"tool-b-v1.bin","browser_download_url":%q}]`, serverURL+"/tool-a-v1.bin", serverURL+"/tool-b-v1.bin")
 		case strings.HasPrefix(r.URL.Path, "/tool-"):
 			_, _ = w.Write([]byte("asset"))
 		default:
@@ -540,6 +615,51 @@ func TestResolveGitHubAssetsDoNotMixLatestReleaseChanges(t *testing.T) {
 	}
 }
 
+// TestResolveGitHubAssetsListsPagedAssets 验证 GitHub release assets 会翻页查找完整列表。
+func TestResolveGitHubAssetsListsPagedAssets(t *testing.T) {
+	pageHits := map[string]int{}
+	serverURL := ""
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.Contains(r.URL.Path, "/releases/latest"):
+			fmt.Fprintf(w, `{"id":1,"tag_name":"v1"}`)
+		case r.URL.Path == "/repos/owner/repo/releases/1/assets" && r.URL.Query().Get("page") == "1":
+			pageHits["1"]++
+			w.Header().Set("Link", `<`+serverURL+`/repos/owner/repo/releases/1/assets?per_page=100&page=2>; rel="next"`)
+			fmt.Fprint(w, `[`)
+			for i := 0; i < 100; i++ {
+				if i > 0 {
+					fmt.Fprint(w, `,`)
+				}
+				fmt.Fprintf(w, `{"name":"other-%03d.bin","browser_download_url":%q}`, i, serverURL+fmt.Sprintf("/other-%03d.bin", i))
+			}
+			fmt.Fprint(w, `]`)
+		case r.URL.Path == "/repos/owner/repo/releases/1/assets" && r.URL.Query().Get("page") == "2":
+			pageHits["2"]++
+			fmt.Fprintf(w, `[{"name":"target.bin","browser_download_url":%q}]`, serverURL+"/target.bin")
+		case r.URL.Path == "/target.bin":
+			_, _ = w.Write([]byte("asset"))
+		default:
+			t.Fatalf("unexpected path: %s?%s", r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+	serverURL = server.URL
+	oldBase := githubAPIBase
+	githubAPIBase = server.URL
+	defer func() { githubAPIBase = oldBase }()
+	resolved, err := ResolveAssets("github:owner/repo", []string{"target\\.bin"}, t.TempDir(), filepath.Join(t.TempDir(), "downloads"), "", "", 1, io.Discard, testHasher{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if pageHits["1"] != 1 || pageHits["2"] != 1 {
+		t.Fatalf("page hits = %+v, want both pages", pageHits)
+	}
+	if len(resolved) != 1 || resolved[0].AssetName != "target.bin" {
+		t.Fatalf("unexpected resolved assets: %+v", resolved)
+	}
+}
+
 // TestResolveGitHubAssetsRejectsDuplicateAsset 验证对应场景的行为。
 func TestResolveGitHubAssetsRejectsDuplicateAsset(t *testing.T) {
 	apiAttempts := 0
@@ -549,7 +669,9 @@ func TestResolveGitHubAssetsRejectsDuplicateAsset(t *testing.T) {
 		switch {
 		case strings.Contains(r.URL.Path, "/releases/latest"):
 			apiAttempts++
-			fmt.Fprintf(w, `{"tag_name":"v1","assets":[{"name":"tool.bin","browser_download_url":%q}]}`, serverURL+"/tool.bin")
+			fmt.Fprintf(w, `{"id":1,"tag_name":"v1"}`)
+		case r.URL.Path == "/repos/owner/repo/releases/1/assets":
+			fmt.Fprintf(w, `[{"name":"tool.bin","browser_download_url":%q}]`, serverURL+"/tool.bin")
 		case r.URL.Path == "/tool.bin":
 			assetAttempts++
 			_, _ = w.Write([]byte("asset"))

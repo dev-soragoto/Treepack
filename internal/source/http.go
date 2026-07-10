@@ -15,8 +15,10 @@ import (
 	"time"
 )
 
+const maxRetryAfter = 120 * time.Second
+
 // download 通过 HTTP 下载资源到目标路径，并使用临时文件保证失败清理。
-func download(rawURL, target string, headers map[string]string, proxy string, retries int, progressWriter io.Writer) error {
+func download(rawURL, target string, headers map[string]string, proxy string, retries int, progressWriter io.Writer, clients ...*http.Client) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
@@ -30,7 +32,11 @@ func download(rawURL, target string, headers map[string]string, proxy string, re
 			_ = os.Remove(target)
 		}
 	}()
-	client, err := newHTTPClient(proxy)
+	var injected *http.Client
+	if len(clients) > 0 {
+		injected = clients[0]
+	}
+	client, err := ensureHTTPClient(injected, proxy)
 	if err != nil {
 		return err
 	}
@@ -65,8 +71,8 @@ func download(rawURL, target string, headers map[string]string, proxy string, re
 }
 
 // getJSON 执行带重试的 JSON GET 请求并解码响应体。
-func getJSON(rawURL string, target any, headers map[string]string, proxy string, retries int, requestKind, tag string) error {
-	client, err := newHTTPClient(proxy)
+func getJSON(rawURL string, target any, headers map[string]string, proxy string, retries int, requestKind, tag string, client *http.Client) error {
+	client, err := ensureHTTPClient(client, proxy)
 	if err != nil {
 		return err
 	}
@@ -106,14 +112,21 @@ func doWithRetry(client *http.Client, method, rawURL string, headers map[string]
 			if attempt == maxAttempts {
 				return nil, attempt, fmt.Errorf("%s after %d attempt(s): %w", hostForError(rawURL), attempt, err)
 			}
-			time.Sleep(retryDelay(nil))
+			delay, err := retryDelay(nil)
+			if err != nil {
+				return nil, attempt, err
+			}
+			time.Sleep(delay)
 			continue
 		}
 		if !retryableStatus(resp.StatusCode) || attempt == maxAttempts {
 			return resp, attempt, nil
 		}
-		delay := retryDelay(resp)
+		delay, err := retryDelay(resp)
 		resp.Body.Close()
+		if err != nil {
+			return nil, attempt, err
+		}
 		time.Sleep(delay)
 	}
 	return nil, maxAttempts, lastErr
@@ -130,20 +143,27 @@ func retryableStatus(status int) bool {
 }
 
 // retryDelay 依据 Retry-After 响应头或默认值计算重试等待时间。
-func retryDelay(resp *http.Response) time.Duration {
+func retryDelay(resp *http.Response) (time.Duration, error) {
 	if resp != nil {
 		if value := resp.Header.Get("Retry-After"); value != "" {
 			if seconds, err := time.ParseDuration(value + "s"); err == nil {
-				return seconds
+				return limitRetryAfter(seconds)
 			}
 			if when, err := http.ParseTime(value); err == nil {
 				if delay := time.Until(when); delay > 0 {
-					return delay
+					return limitRetryAfter(delay)
 				}
 			}
 		}
 	}
-	return 100 * time.Millisecond
+	return 100 * time.Millisecond, nil
+}
+
+func limitRetryAfter(delay time.Duration) (time.Duration, error) {
+	if delay > maxRetryAfter {
+		return 0, fmt.Errorf("Retry-After exceeds maximum %s", maxRetryAfter)
+	}
+	return delay, nil
 }
 
 // httpError 构造包含主机、状态码、重试次数和限流信息的 HTTP 错误。
@@ -179,8 +199,8 @@ func hostForError(rawURL string) string {
 	return parsed.Host
 }
 
-// newHTTPClient 创建带超时和可选代理配置的 HTTP 客户端。
-func newHTTPClient(proxy string) (*http.Client, error) {
+// NewHTTPClient 创建带超时和可选代理配置的 HTTP 客户端。
+func NewHTTPClient(proxy string) (*http.Client, error) {
 	transport, ok := http.DefaultTransport.(*http.Transport)
 	if !ok {
 		return nil, fmt.Errorf("default transport is not an *http.Transport")
@@ -199,6 +219,17 @@ func newHTTPClient(proxy string) (*http.Client, error) {
 		clone.Proxy = http.ProxyURL(proxyURL)
 	}
 	return &http.Client{Transport: clone}, nil
+}
+
+func ensureHTTPClient(client *http.Client, proxy string) (*http.Client, error) {
+	if client != nil {
+		return client, nil
+	}
+	return NewHTTPClient(proxy)
+}
+
+func newHTTPClient(proxy string) (*http.Client, error) {
+	return NewHTTPClient(proxy)
 }
 
 // githubHeaders 构造 GitHub API 或资产下载请求头。
