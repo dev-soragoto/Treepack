@@ -1,25 +1,18 @@
-Usage:
-  treepack [-c kit.toml] [-s DIR] [-o DIR] [--work-dir DIR] [--keep-work] [--raw-archive] [-p PROXY] [--download-retries N] [--github-token TOKEN] [-v] [-h]
 
-Options:
-  -c, --config kit.toml   Manifest path. Defaults to kit.toml.
-  -s, --source DIR        Override paths.source from the manifest.
-  -o, --output DIR        Override paths.output from the manifest.
-      --work-dir DIR      Override paths.work from the manifest.
-      --keep-work         Keep the work run directory after the build.
-      --raw-archive       Include common OS desktop metadata in generated zip archives.
-  -p, --proxy URL         Proxy for downloads. Supports http, https, socks5, and socks5h.
-      --download-retries N
-                           Total download attempts, including the first request. Defaults to 3.
-      --github-token TOKEN
-                           GitHub token for release API requests and GitHub asset downloads.
-  -v, --version           Print the treepack version and exit.
-  -h, --help              Print this help and exit.
+Help topics:
+  treepack --help config
+  treepack --help packages
+  treepack --help build
+  treepack --help paths
+  treepack --help verify
+  treepack --help examples
 
 Environment:
   GitHub token precedence is --github-token, then GITHUB_TOKEN, then GH_TOKEN.
   Without --proxy, downloads use Go's default proxy environment handling.
   With --proxy, only the explicit proxy URL is used.
+  Network request errors and HTTP 429, 502, 503, and 504 are retried. Retry-After
+  is honored when present.
 
 Path rules:
   --config is resolved from the current working directory.
@@ -27,7 +20,7 @@ Path rules:
   from the directory containing kit.toml.
   CLI overrides --source, --output, and --work-dir are resolved from the
   current working directory.
-  file: package sources and resources.copy are resolved under paths.source.
+  file: package sources are resolved under paths.source.
 
 Output:
   stdout contains the main command result.
@@ -47,5 +40,5 @@ Exit codes:
 Examples:
   treepack
   treepack -c examples/smoke/kit.toml
-  treepack -c kit.toml -s resources -o out --keep-work
+  treepack -c kit.toml -s source -o out --keep-work
   treepack -c kit.toml -p socks5://127.0.0.1:7890

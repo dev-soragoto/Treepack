@@ -1,0 +1,8 @@
+Examples
+
+  treepack
+  treepack -c examples/smoke/kit.toml
+  treepack -c kit.toml -s source -o out --keep-work
+  treepack -c kit.toml -p socks5://127.0.0.1:7890
+  treepack --help config
+  treepack --help packages

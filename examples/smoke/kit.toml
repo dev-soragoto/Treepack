@@ -16,9 +16,6 @@ dirs = [
   "empty/layout",
 ]
 
-[resources]
-copy = "resources/sd"
-
 [[packages]]
 name = "Archive Asset"
 group = "core"
@@ -113,6 +110,13 @@ op = "cp"
 from = "missing/optional.txt"
 to = "output/optional/missing.txt"
 required = false
+
+[[packages]]
+name = "Static Resources"
+group = "resources"
+required = true
+source = "file:resources/sd"
+target = "."
 
 [verify]
 files = [

@@ -3,7 +3,6 @@ package build
 import (
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -49,29 +48,25 @@ func Build(options Options) (*report.BuildReport, error) {
 		return nil, err
 	}
 	rep := report.New(m)
-	sourceDir, outputDir, workBase, keepWork, err := resolveBuildPaths(m, options)
+	paths, err := resolveBuildPaths(m, options)
 	if err != nil {
 		return rep, err
 	}
-	paths := ResolvedPaths{Source: sourceDir, Output: outputDir, WorkBase: workBase, KeepWork: keepWork}
-	m.Paths.Source = paths.Source
-	m.Paths.Output = paths.Output
-	m.Paths.Work = paths.WorkBase
-	m.Build.KeepWork = paths.KeepWork
 	if logger != nil {
-		logger.Info("source dir: %s", paths.Source)
-		logger.Info("output dir: %s", paths.Output)
+		logger.Info("source dir: %s", paths.SourceRoot)
+		logger.Info("output dir: %s", paths.OutputRoot)
 	}
 	runDir, err := createRunDir(paths.WorkBase)
 	if err != nil {
 		return rep, err
 	}
 	paths.RunDir = runDir
-	m.Paths.Work = paths.RunDir
+	paths.StagedOutput = filepath.Join(paths.RunDir, "output")
+	rep.Paths = paths
 	if logger != nil {
 		logger.Info("work dir: %s", paths.RunDir)
 	}
-	if err := validateRunDir(paths.RunDir, paths.Source, paths.Output); err != nil {
+	if err := validateRunDir(paths.RunDir, paths.SourceRoot, paths.OutputRoot); err != nil {
 		_ = os.RemoveAll(paths.RunDir)
 		return rep, err
 	}
@@ -87,21 +82,30 @@ func Build(options Options) (*report.BuildReport, error) {
 		}
 		_ = os.RemoveAll(paths.RunDir)
 	}()
-	stagedOutput := filepath.Join(paths.RunDir, "output")
-	if err := cleanDir(stagedOutput); err != nil {
+	fs := fsAdapter{}
+	ctx := &BuildContext{
+		Manifest: m,
+		Paths:    paths,
+		Options:  options,
+		Report:   rep,
+		FS:       fs,
+		Logger:   logger,
+	}
+	if err := preflightBuild(ctx); err != nil {
+		return rep, err
+	}
+	if err := cleanDir(paths.StagedOutput); err != nil {
 		return rep, err
 	}
 	if usesGitHub(m) && options.GitHubToken == "" && logger != nil {
 		logger.Info("github token not configured; using anonymous requests")
 	}
-	fs := fsAdapter{}
-	var httpClient *http.Client
 	if usesHTTP(m) {
 		client, err := source.NewHTTPClient(options.Proxy)
 		if err != nil {
 			return rep, err
 		}
-		httpClient = client
+		ctx.HTTPClient = client
 	}
 	for i, pkg := range m.Packages {
 		if logger != nil {
@@ -116,18 +120,18 @@ func Build(options Options) (*report.BuildReport, error) {
 		}
 		packageOutputDir, err := installPackage(installRequest{
 			Package:     pkg,
-			SourceDir:   paths.Source,
+			SourceDir:   ctx.Paths.SourceRoot,
 			DownloadDir: downloadDir,
 			PackageDir:  packageDir,
-			Token:       options.GitHubToken,
-			Proxy:       options.Proxy,
-			Retries:     options.Retries,
-			Progress:    options.Progress,
-			HTTPClient:  httpClient,
-			FS:          fs,
+			Token:       ctx.Options.GitHubToken,
+			Proxy:       ctx.Options.Proxy,
+			Retries:     ctx.Options.Retries,
+			Progress:    ctx.Options.Progress,
+			HTTPClient:  ctx.HTTPClient,
+			FS:          ctx.FS,
 			Record:      &record,
-			Report:      rep,
-			Logger:      logger,
+			Report:      ctx.Report,
+			Logger:      ctx.Logger,
 		})
 		if err != nil {
 			record.OK = false
@@ -147,22 +151,21 @@ func Build(options Options) (*report.BuildReport, error) {
 		}
 		record.OK = true
 		rep.Packages = append(rep.Packages, record)
-		if err := fs.CopyTreeContents(packageOutputDir, stagedOutput); err != nil {
+		if err := ctx.FS.CopyTreeContents(packageOutputDir, ctx.Paths.StagedOutput); err != nil {
 			return rep, err
 		}
 		if logger != nil {
-			logger.Key("merged package: %s -> %s", packageOutputDir, stagedOutput)
+			logger.Key("merged package: %s -> %s", packageOutputDir, ctx.Paths.StagedOutput)
 		}
 	}
 	if !rep.HasRequiredFailures() {
-		if err := createLayout(m, stagedOutput); err != nil {
+		if err := createLayout(m, ctx.Paths.StagedOutput); err != nil {
 			return rep, err
 		}
-		copyResources(m, paths.Source, stagedOutput, fs, rep, logger)
 		if logger != nil {
 			logger.Info("running verification")
 		}
-		rep.Verification = verify.Run(m.Verify, stagedOutput)
+		rep.Verification = verify.Run(m.Verify, ctx.Paths.StagedOutput)
 		for _, result := range rep.Verification {
 			if !result.OK {
 				rep.Failures = append(rep.Failures, fmt.Sprintf("verification failed: %s: %s", result.Label, result.Message))
@@ -177,13 +180,13 @@ func Build(options Options) (*report.BuildReport, error) {
 	if logger != nil {
 		logger.Info("writing reports")
 	}
-	if err := writeReports(m, stagedOutput, rep, options.Version); err != nil {
+	if err := writeReports(ctx); err != nil {
 		return rep, err
 	}
 	if rep.HasRequiredFailures() {
 		return rep, fmt.Errorf("required build step failed")
 	}
-	return finalizeOutput(m, paths.Source, paths.Output, paths.WorkBase, paths.RunDir, stagedOutput, fs, rep, logger, options.RawArchive)
+	return finalizeOutput(ctx)
 }
 
 // usesGitHub 判断清单中是否包含 GitHub release 类型的包来源。

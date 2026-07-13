@@ -1,0 +1,7 @@
+Paths
+
+paths.source must exist and must be a directory. paths.output is a generated
+result directory and may be removed during publish.
+
+paths.source, paths.output, paths.work, the manifest path, the run directory,
+and build.archive are checked for unsafe overlap before build output is written.

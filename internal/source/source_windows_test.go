@@ -3,7 +3,6 @@
 package source
 
 import (
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -19,7 +18,12 @@ func TestResolveFileRejectsJunction(t *testing.T) {
 	}
 	createJunctionSource(t, filepath.Join(root, "junction"), target)
 
-	if _, err := ResolveAsset("file:junction", ".*", root, filepath.Join(root, "downloads"), "", "", 3, io.Discard, testHasher{}); err == nil {
+	if _, err := resolveForTest(ResolveRequest{
+		Source:      "file:junction",
+		Assets:      []AssetRequest{{Pattern: ".*"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	}); err == nil {
 		t.Fatal("expected junction local source to fail")
 	}
 }

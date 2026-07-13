@@ -23,9 +23,12 @@ type OperationConfig struct {
 	Regex    string `toml:"regex"`
 }
 
-// IsRequired 返回操作是否应作为必需步骤处理。
-func (o OperationConfig) IsRequired() bool {
-	return o.Required == nil || *o.Required
+// IsRequired 返回操作的最终必需性；未声明时继承调用方提供的包默认值。
+func (o OperationConfig) IsRequired(defaultRequired bool) bool {
+	if o.Required == nil {
+		return defaultRequired
+	}
+	return *o.Required
 }
 
 type FS interface {
@@ -78,12 +81,13 @@ func (r OperationResult) FailedRequired() bool {
 }
 
 // Run 在工作目录内执行单个操作并返回结构化结果。
-func Run(config OperationConfig, workDir string, fs FS) OperationResult {
+func Run(config OperationConfig, workDir string, fs FS, defaultRequired bool) OperationResult {
 	label := Label(config)
+	required := config.IsRequired(defaultRequired)
 	if err := dispatch(config, workDir, fs); err != nil {
-		return OperationResult{Op: config.Op, Label: label, Required: config.IsRequired(), OK: false, Message: err.Error()}
+		return OperationResult{Op: config.Op, Label: label, Required: required, OK: false, Message: err.Error()}
 	}
-	return OperationResult{Op: config.Op, Label: label, Required: config.IsRequired(), OK: true}
+	return OperationResult{Op: config.Op, Label: label, Required: required, OK: true}
 }
 
 // dispatch 根据操作类型分发到复制、删除或 touch 处理逻辑。

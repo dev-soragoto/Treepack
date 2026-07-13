@@ -48,7 +48,7 @@ func installPackage(req installRequest) (string, error) {
 	for _, assetConfig := range assetConfigs {
 		assetRequests = append(assetRequests, source.AssetRequest{Pattern: assetConfig.Asset, SHA256: assetConfig.SHA256})
 	}
-	resolvedAssets, err := source.ResolveAssetRequests(source.ResolveRequest{
+	resolvedAssets, err := source.Resolve(source.ResolveRequest{
 		Source:      pkg.Source,
 		Assets:      assetRequests,
 		Root:        req.SourceDir,
@@ -72,7 +72,7 @@ func installPackage(req installRequest) (string, error) {
 		}
 	}
 	for _, step := range pkg.Steps {
-		result := ops.Run(step, packageDir, fs)
+		result := ops.Run(step, packageDir, fs, pkg.IsRequired())
 		req.Report.AddOperation(result)
 		logOperation(result, req.Logger)
 		if result.FailedRequired() {

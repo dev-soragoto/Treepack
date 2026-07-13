@@ -71,6 +71,15 @@ func resolveFile(source, pattern, root, downloadDir string, h Hasher) (ResolvedA
 		if err != nil {
 			return ResolvedAsset{}, err
 		}
+	} else if pattern != "" {
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			return ResolvedAsset{}, err
+		}
+		name := filepath.Base(src)
+		if !re.MatchString(name) {
+			return ResolvedAsset{}, fmt.Errorf("local filename %q does not match asset pattern %q", name, pattern)
+		}
 	}
 	return copyLocalAsset(source, root, src, downloadDir, kind, h)
 }

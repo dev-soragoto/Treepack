@@ -32,6 +32,19 @@ func (testHasher) CopyExact(src, dst string) error {
 	return fsutil.CopyExact(src, dst)
 }
 
+func resolveForTest(req ResolveRequest) ([]ResolvedAsset, error) {
+	if req.Retries == 0 {
+		req.Retries = 3
+	}
+	if req.Progress == nil {
+		req.Progress = io.Discard
+	}
+	if req.Hasher == nil {
+		req.Hasher = testHasher{}
+	}
+	return Resolve(req)
+}
+
 // TestResolveFileSource 验证本地目录 source 可以按 asset 模式解析文件。
 func TestResolveFileSource(t *testing.T) {
 	root := t.TempDir()
@@ -41,12 +54,49 @@ func TestResolveFileSource(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "fixtures", "asset.bin"), []byte("asset"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := ResolveAsset("file:fixtures", "asset\\.bin", root, filepath.Join(root, "downloads"), "", "", 3, io.Discard, testHasher{})
+	resolved, err := resolveForTest(ResolveRequest{
+		Source:      "file:fixtures",
+		Assets:      []AssetRequest{{Pattern: "asset\\.bin"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.AssetName != "asset.bin" || resolved.Requested != "local" || resolved.Resolved != "local" {
+	if resolved[0].AssetName != "asset.bin" || resolved[0].Requested != "local" || resolved[0].Resolved != "local" {
 		t.Fatalf("unexpected resolved asset: %+v", resolved)
+	}
+}
+
+func TestResolveDirectFilePatternSemantics(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "payload.bin"), []byte("asset"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, pattern := range []string{"", `payload`, `^payload\.bin$`} {
+		resolved, err := resolveForTest(ResolveRequest{
+			Source:      "file:payload.bin",
+			Assets:      []AssetRequest{{Pattern: pattern}},
+			Root:        root,
+			DownloadDir: filepath.Join(root, "downloads-"+strings.ReplaceAll(pattern, `\`, "_")),
+		})
+		if err != nil {
+			t.Fatalf("pattern %q: %v", pattern, err)
+		}
+		if resolved[0].AssetName != "payload.bin" {
+			t.Fatalf("pattern %q resolved %+v", pattern, resolved)
+		}
+	}
+	for _, pattern := range []string{`^other`, `[`} {
+		_, err := resolveForTest(ResolveRequest{
+			Source:      "file:payload.bin",
+			Assets:      []AssetRequest{{Pattern: pattern}},
+			Root:        root,
+			DownloadDir: filepath.Join(root, "bad-download"),
+		})
+		if err == nil {
+			t.Fatalf("pattern %q should fail", pattern)
+		}
 	}
 }
 
@@ -59,11 +109,16 @@ func TestResolveFileSourceDirectoryWithoutPattern(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "app", "bin", "run.txt"), []byte("run"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := ResolveAsset("file:app", "", root, filepath.Join(root, "downloads"), "", "", 3, io.Discard, testHasher{})
+	resolved, err := resolveForTest(ResolveRequest{
+		Source:      "file:app",
+		Assets:      []AssetRequest{{}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.AssetName != "app" || resolved.Kind != "dir" || resolved.SHA256 != "" {
+	if resolved[0].AssetName != "app" || resolved[0].Kind != "dir" || resolved[0].SHA256 != "" {
 		t.Fatalf("unexpected directory asset: %+v", resolved)
 	}
 	if _, err := os.Stat(filepath.Join(root, "downloads", "app", "bin", "run.txt")); err != nil {
@@ -80,11 +135,16 @@ func TestResolveFileSourceMatchesDirectoryAsset(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "fixtures", "app", "bin", "run.txt"), []byte("run"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := ResolveAsset("file:fixtures", `^app$`, root, filepath.Join(root, "downloads"), "", "", 3, io.Discard, testHasher{})
+	resolved, err := resolveForTest(ResolveRequest{
+		Source:      "file:fixtures",
+		Assets:      []AssetRequest{{Pattern: `^app$`}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.AssetName != "app" || resolved.Kind != "dir" {
+	if resolved[0].AssetName != "app" || resolved[0].Kind != "dir" {
 		t.Fatalf("unexpected matched directory asset: %+v", resolved)
 	}
 }
@@ -100,13 +160,18 @@ func TestResolveFileSourceRejectsMultipleMatches(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := ResolveAsset("file:fixtures", `^payload-.*\.bin$`, root, filepath.Join(root, "downloads"), "", "", 3, io.Discard, testHasher{}); err == nil {
+	if _, err := resolveForTest(ResolveRequest{
+		Source:      "file:fixtures",
+		Assets:      []AssetRequest{{Pattern: `^payload-.*\.bin$`}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	}); err == nil {
 		t.Fatal("expected multiple local asset matches to fail")
 	}
 }
 
-// TestResolveAssetsRejectsDuplicateLocalFile 验证对应场景的行为。
-func TestResolveAssetsRejectsDuplicateLocalFile(t *testing.T) {
+// TestResolveRejectsDuplicateLocalFile 验证对应场景的行为。
+func TestResolveRejectsDuplicateLocalFile(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "fixtures"), 0o755); err != nil {
 		t.Fatal(err)
@@ -114,30 +179,41 @@ func TestResolveAssetsRejectsDuplicateLocalFile(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "fixtures", "asset.bin"), []byte("asset"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	_, err := ResolveAssets("file:fixtures", []string{`asset\.bin`, `^asset\.bin$`}, root, filepath.Join(root, "downloads"), "", "", 3, io.Discard, testHasher{})
+	_, err := resolveForTest(ResolveRequest{
+		Source:      "file:fixtures",
+		Assets:      []AssetRequest{{Pattern: `asset\.bin`}, {Pattern: `^asset\.bin$`}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	})
 	if err == nil || !strings.Contains(err.Error(), "multiple asset patterns resolved to the same file") {
 		t.Fatalf("expected duplicate resolved asset error, got %v", err)
 	}
 }
 
-// TestResolveAssetsRejectsDuplicateURLFile 验证对应场景的行为。
-func TestResolveAssetsRejectsDuplicateURLFile(t *testing.T) {
+// TestResolveRejectsDuplicateURLFile 验证对应场景的行为。
+func TestResolveRejectsDuplicateURLFile(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("asset"))
 	}))
 	defer server.Close()
-	_, err := ResolveAssets("url:"+server.URL+"/payload.bin", []string{`payload\.bin`, `^payload\.bin$`}, t.TempDir(), filepath.Join(t.TempDir(), "downloads"), "", "", 3, io.Discard, testHasher{})
+	root := t.TempDir()
+	_, err := resolveForTest(ResolveRequest{
+		Source:      "url:" + server.URL + "/payload.bin",
+		Assets:      []AssetRequest{{Pattern: `payload\.bin`}, {Pattern: `^payload\.bin$`}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	})
 	if err == nil || !strings.Contains(err.Error(), "multiple asset patterns resolved to the same file") {
 		t.Fatalf("expected duplicate resolved asset error, got %v", err)
 	}
 }
 
-func TestResolveAssetRequestsValidatesSHA256(t *testing.T) {
+func TestResolveValidatesSHA256(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "asset.bin"), []byte("asset"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := ResolveAssetRequests(ResolveRequest{
+	resolved, err := Resolve(ResolveRequest{
 		Source:      "file:asset.bin",
 		Assets:      []AssetRequest{{Pattern: "asset\\.bin", SHA256: "sha"}},
 		Root:        root,
@@ -152,7 +228,7 @@ func TestResolveAssetRequestsValidatesSHA256(t *testing.T) {
 	if len(resolved) != 1 || resolved[0].SHA256 != "sha" {
 		t.Fatalf("unexpected resolved assets: %+v", resolved)
 	}
-	_, err = ResolveAssetRequests(ResolveRequest{
+	_, err = Resolve(ResolveRequest{
 		Source:      "file:asset.bin",
 		Assets:      []AssetRequest{{Pattern: "asset\\.bin", SHA256: strings.Repeat("0", 64)}},
 		Root:        root,
@@ -166,12 +242,12 @@ func TestResolveAssetRequestsValidatesSHA256(t *testing.T) {
 	}
 }
 
-func TestResolveAssetRequestsRejectsDirectorySHA256(t *testing.T) {
+func TestResolveRejectsDirectorySHA256(t *testing.T) {
 	root := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(root, "app"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	_, err := ResolveAssetRequests(ResolveRequest{
+	_, err := Resolve(ResolveRequest{
 		Source:      "file:app",
 		Assets:      []AssetRequest{{SHA256: strings.Repeat("1", 64)}},
 		Root:        root,
@@ -200,7 +276,12 @@ func TestResolveFileSourceRejectsSymlink(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "fixtures", "target.bin"), filepath.Join(root, "fixtures", "asset.bin")); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ResolveAsset("file:fixtures/asset.bin", "asset\\.bin", root, filepath.Join(root, "downloads"), "", "", 3, io.Discard, testHasher{}); err == nil {
+	if _, err := resolveForTest(ResolveRequest{
+		Source:      "file:fixtures/asset.bin",
+		Assets:      []AssetRequest{{Pattern: "asset\\.bin"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	}); err == nil {
 		t.Fatal("expected symlink file source to fail")
 	}
 }
@@ -208,7 +289,12 @@ func TestResolveFileSourceRejectsSymlink(t *testing.T) {
 // TestResolveFileMissingSourceError 验证本地 source 不存在时报告 does not exist。
 func TestResolveFileMissingSourceError(t *testing.T) {
 	root := t.TempDir()
-	_, err := ResolveAsset("file:missing.bin", ".*", root, filepath.Join(root, "downloads"), "", "", 3, io.Discard, testHasher{})
+	_, err := resolveForTest(ResolveRequest{
+		Source:      "file:missing.bin",
+		Assets:      []AssetRequest{{Pattern: ".*"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	})
 	if err == nil || !strings.Contains(err.Error(), "local source does not exist") {
 		t.Fatalf("expected missing source error, got %v", err)
 	}
@@ -226,7 +312,12 @@ func TestResolveFileInvalidTypeError(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "target.bin"), filepath.Join(root, "link.bin")); err != nil {
 		t.Fatal(err)
 	}
-	_, err := ResolveAsset("file:link.bin", ".*", root, filepath.Join(root, "downloads"), "", "", 3, io.Discard, testHasher{})
+	_, err := resolveForTest(ResolveRequest{
+		Source:      "file:link.bin",
+		Assets:      []AssetRequest{{Pattern: ".*"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	})
 	if err == nil || !strings.Contains(err.Error(), "invalid local source") || strings.Contains(err.Error(), "does not exist") {
 		t.Fatalf("expected invalid source error, got %v", err)
 	}
@@ -251,15 +342,25 @@ func TestResolveFileDirMatchesBeforeValidate(t *testing.T) {
 	if err := os.Symlink(filepath.Join(fixtures, "target.bin"), filepath.Join(fixtures, "unrelated-link")); err != nil {
 		t.Fatal(err)
 	}
-	resolved, err := ResolveAsset("file:fixtures", `^wanted\.zip$`, root, filepath.Join(root, "downloads"), "", "", 3, io.Discard, testHasher{})
+	resolved, err := resolveForTest(ResolveRequest{
+		Source:      "file:fixtures",
+		Assets:      []AssetRequest{{Pattern: `^wanted\.zip$`}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.AssetName != "wanted.zip" {
-		t.Fatalf("asset = %s, want wanted.zip", resolved.AssetName)
+	if resolved[0].AssetName != "wanted.zip" {
+		t.Fatalf("asset = %s, want wanted.zip", resolved[0].AssetName)
 	}
 
-	_, err = ResolveAsset("file:fixtures", `^unrelated-link$`, root, filepath.Join(root, "downloads2"), "", "", 3, io.Discard, testHasher{})
+	_, err = resolveForTest(ResolveRequest{
+		Source:      "file:fixtures",
+		Assets:      []AssetRequest{{Pattern: `^unrelated-link$`}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads2"),
+	})
 	if err == nil {
 		t.Fatal("expected matched symlink to fail")
 	}
@@ -273,11 +374,17 @@ func TestResolveURLSource(t *testing.T) {
 	defer server.Close()
 	root := t.TempDir()
 	var progress bytes.Buffer
-	resolved, err := ResolveAsset("url:"+server.URL+"/payload.bin", "payload\\.bin", root, filepath.Join(root, "downloads"), "", "", 3, &progress, testHasher{})
+	resolved, err := resolveForTest(ResolveRequest{
+		Source:      "url:" + server.URL + "/payload.bin",
+		Assets:      []AssetRequest{{Pattern: "payload\\.bin"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+		Progress:    &progress,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resolved.AssetName != "payload.bin" || resolved.Requested != "direct" {
+	if resolved[0].AssetName != "payload.bin" || resolved[0].Requested != "direct" {
 		t.Fatalf("unexpected resolved asset: %+v", resolved)
 	}
 	if progress.Len() == 0 {
@@ -292,7 +399,14 @@ func TestResolveURLRejectsUnsupportedSchemes(t *testing.T) {
 		"url:file:///tmp/file.zip",
 		"url:not-a-url",
 	} {
-		if _, err := ResolveAsset(source, ".*", t.TempDir(), filepath.Join(t.TempDir(), "downloads"), "", "", 1, io.Discard, testHasher{}); err == nil {
+		root := t.TempDir()
+		if _, err := resolveForTest(ResolveRequest{
+			Source:      source,
+			Assets:      []AssetRequest{{Pattern: ".*"}},
+			Root:        root,
+			DownloadDir: filepath.Join(root, "downloads"),
+			Retries:     1,
+		}); err == nil {
 			t.Fatalf("expected %s to fail", source)
 		}
 	}
@@ -300,7 +414,13 @@ func TestResolveURLRejectsUnsupportedSchemes(t *testing.T) {
 
 // TestResolveInvalidGitHubSource 验证格式错误的 GitHub source 会被拒绝。
 func TestResolveInvalidGitHubSource(t *testing.T) {
-	if _, err := ResolveAsset("github:bad", ".*", t.TempDir(), t.TempDir(), "", "", 3, io.Discard, testHasher{}); err == nil {
+	root := t.TempDir()
+	if _, err := resolveForTest(ResolveRequest{
+		Source:      "github:bad",
+		Assets:      []AssetRequest{{Pattern: ".*"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	}); err == nil {
 		t.Fatal("expected invalid github source error")
 	}
 }
@@ -308,7 +428,12 @@ func TestResolveInvalidGitHubSource(t *testing.T) {
 // TestResolveFileRejectsTraversal 验证 file source 不能穿越到 kit root 外。
 func TestResolveFileRejectsTraversal(t *testing.T) {
 	root := t.TempDir()
-	if _, err := ResolveAsset("file:../outside.bin", ".*", root, filepath.Join(root, "downloads"), "", "", 3, io.Discard, testHasher{}); err == nil {
+	if _, err := resolveForTest(ResolveRequest{
+		Source:      "file:../outside.bin",
+		Assets:      []AssetRequest{{Pattern: ".*"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+	}); err == nil {
 		t.Fatal("expected file traversal to fail")
 	}
 }
@@ -481,7 +606,15 @@ func TestResolveGitHubAPIErrors(t *testing.T) {
 			githubAPIBase = server.URL
 			defer func() { githubAPIBase = oldBase }()
 
-			_, err := ResolveAsset(tc.source, "asset\\.zip", t.TempDir(), filepath.Join(t.TempDir(), "downloads"), "secret-token", "", 1, io.Discard, testHasher{})
+			root := t.TempDir()
+			_, err := resolveForTest(ResolveRequest{
+				Source:      tc.source,
+				Assets:      []AssetRequest{{Pattern: "asset\\.zip"}},
+				Root:        root,
+				DownloadDir: filepath.Join(root, "downloads"),
+				GitHubToken: "secret-token",
+				Retries:     1,
+			})
 			if err == nil {
 				t.Fatal("expected GitHub API error")
 			}
@@ -531,7 +664,14 @@ func TestResolveGitHubUsesRetryCountForAPIAndAsset(t *testing.T) {
 	oldBase := githubAPIBase
 	githubAPIBase = server.URL
 	defer func() { githubAPIBase = oldBase }()
-	if _, err := ResolveAsset("github:owner/repo", "asset\\.zip", t.TempDir(), filepath.Join(t.TempDir(), "downloads"), "", "", 2, io.Discard, testHasher{}); err != nil {
+	root := t.TempDir()
+	if _, err := resolveForTest(ResolveRequest{
+		Source:      "github:owner/repo",
+		Assets:      []AssetRequest{{Pattern: "asset\\.zip"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+		Retries:     2,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	if apiAttempts != 2 || assetAttempts != 2 {
@@ -563,7 +703,14 @@ func TestResolveGitHubAssetsResolveReleaseOnce(t *testing.T) {
 	oldBase := githubAPIBase
 	githubAPIBase = server.URL
 	defer func() { githubAPIBase = oldBase }()
-	resolved, err := ResolveAssets("github:owner/repo", []string{"tool-a\\.bin", "tool-b\\.bin"}, t.TempDir(), filepath.Join(t.TempDir(), "downloads"), "", "", 1, io.Discard, testHasher{})
+	root := t.TempDir()
+	resolved, err := resolveForTest(ResolveRequest{
+		Source:      "github:owner/repo",
+		Assets:      []AssetRequest{{Pattern: "tool-a\\.bin"}, {Pattern: "tool-b\\.bin"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+		Retries:     1,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -601,7 +748,14 @@ func TestResolveGitHubAssetsDoNotMixLatestReleaseChanges(t *testing.T) {
 	oldBase := githubAPIBase
 	githubAPIBase = server.URL
 	defer func() { githubAPIBase = oldBase }()
-	resolved, err := ResolveAssets("github:owner/repo", []string{"tool-a.*\\.bin", "tool-b.*\\.bin"}, t.TempDir(), filepath.Join(t.TempDir(), "downloads"), "", "", 1, io.Discard, testHasher{})
+	root := t.TempDir()
+	resolved, err := resolveForTest(ResolveRequest{
+		Source:      "github:owner/repo",
+		Assets:      []AssetRequest{{Pattern: "tool-a.*\\.bin"}, {Pattern: "tool-b.*\\.bin"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+		Retries:     1,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -648,7 +802,14 @@ func TestResolveGitHubAssetsListsPagedAssets(t *testing.T) {
 	oldBase := githubAPIBase
 	githubAPIBase = server.URL
 	defer func() { githubAPIBase = oldBase }()
-	resolved, err := ResolveAssets("github:owner/repo", []string{"target\\.bin"}, t.TempDir(), filepath.Join(t.TempDir(), "downloads"), "", "", 1, io.Discard, testHasher{})
+	root := t.TempDir()
+	resolved, err := resolveForTest(ResolveRequest{
+		Source:      "github:owner/repo",
+		Assets:      []AssetRequest{{Pattern: "target\\.bin"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+		Retries:     1,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -684,7 +845,14 @@ func TestResolveGitHubAssetsRejectsDuplicateAsset(t *testing.T) {
 	oldBase := githubAPIBase
 	githubAPIBase = server.URL
 	defer func() { githubAPIBase = oldBase }()
-	_, err := ResolveAssets("github:owner/repo", []string{"tool\\.bin", "^tool\\.bin$"}, t.TempDir(), filepath.Join(t.TempDir(), "downloads"), "", "", 1, io.Discard, testHasher{})
+	root := t.TempDir()
+	_, err := resolveForTest(ResolveRequest{
+		Source:      "github:owner/repo",
+		Assets:      []AssetRequest{{Pattern: "tool\\.bin"}, {Pattern: "^tool\\.bin$"}},
+		Root:        root,
+		DownloadDir: filepath.Join(root, "downloads"),
+		Retries:     1,
+	})
 	if err == nil || !strings.Contains(err.Error(), "multiple asset patterns resolved to the same file") {
 		t.Fatalf("expected duplicate resolved asset error, got %v", err)
 	}

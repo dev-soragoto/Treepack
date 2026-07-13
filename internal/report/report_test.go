@@ -1,10 +1,12 @@
 package report
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"treepack/internal/manifest"
+	"treepack/internal/ops"
 	"treepack/internal/source"
 )
 
@@ -60,6 +62,36 @@ func TestBuildInfoDoesNotPrintAbsoluteFileURL(t *testing.T) {
 	info := BuildInfo(rep, "test")
 	if strings.Contains(info, "C:/Users") || !strings.Contains(info, "URL: file:<local>") {
 		t.Fatalf("unexpected file URL rendering:\n%s", info)
+	}
+}
+
+func TestBuildInfoOmitsResolvedPaths(t *testing.T) {
+	rep := New(&manifest.Manifest{Pack: manifest.PackConfig{Name: "Pack"}})
+	rep.Paths.SourceRoot = `C:\Users\secret\source`
+	rep.Paths.OutputRoot = `C:\Users\secret\output`
+	rep.Paths.RunDir = `C:\Users\secret\work`
+	rep.Operations = []ops.OperationResult{{
+		Op: "cp", Label: "cp missing -> output", Required: false,
+		Message: fmt.Sprintf(`CreateFile %s\packages\001\missing: file not found`, rep.Paths.RunDir),
+	}}
+	rep.Failures = []string{rep.Operations[0].Message}
+	info := BuildInfo(rep, "test")
+	for _, forbidden := range []string{"Resolved Paths", `C:\Users\secret`} {
+		if strings.Contains(info, forbidden) {
+			t.Fatalf("build info leaked %q:\n%s", forbidden, info)
+		}
+	}
+}
+
+func TestBuildInfoSanitizesAbsoluteFileSource(t *testing.T) {
+	rep := New(&manifest.Manifest{Pack: manifest.PackConfig{Name: "Pack"}})
+	rep.Packages = []PackageRecord{{
+		Package: manifest.PackageConfig{Name: "Local", Source: `file:C:/Users/secret/asset.bin`},
+		OK:      true,
+	}}
+	info := BuildInfo(rep, "test")
+	if strings.Contains(info, "C:/Users/secret") || !strings.Contains(info, "Source: file:<local>") {
+		t.Fatalf("absolute file source leaked:\n%s", info)
 	}
 }
 

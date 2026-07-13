@@ -24,19 +24,6 @@ type githubAsset struct {
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
-// resolveGitHub 解析单个 GitHub release 资源模式。
-func resolveGitHub(source, pattern, downloadDir, githubToken, proxy string, retries int, progress io.Writer, h Hasher) (ResolvedAsset, error) {
-	client, err := newHTTPClient(proxy)
-	if err != nil {
-		return ResolvedAsset{}, err
-	}
-	resolved, err := resolveGitHubAssets(source, []AssetRequest{{Pattern: pattern}}, downloadDir, githubToken, proxy, retries, progress, h, client)
-	if err != nil {
-		return ResolvedAsset{}, err
-	}
-	return resolved[0], nil
-}
-
 // resolveGitHubAssets 解析 GitHub release 资源并下载所有匹配的唯一资产。
 func resolveGitHubAssets(source string, requests []AssetRequest, downloadDir, githubToken, proxy string, retries int, progress io.Writer, h Hasher, client *http.Client) ([]ResolvedAsset, error) {
 	spec := strings.TrimPrefix(source, "github:")

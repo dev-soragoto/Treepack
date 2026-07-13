@@ -1,0 +1,13 @@
+Build
+
+Build is the default action. There is no build subcommand.
+
+Treepack resolves packages into a run directory, merges package output, creates
+the requested layout, runs verification, writes reports, publishes paths.output,
+and creates a zip archive only when build.archive is configured.
+
+Targets, steps, layout, verification, build_info, archive templates, and path
+overlaps are preflighted before any network request. Archive creation uses a
+random temporary file beside the final archive; a creation failure preserves the
+old output and archive and removes only that run's temporary file. BUILD_INFO
+contains package, operation, and verification data, but not resolved local paths.

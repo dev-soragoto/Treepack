@@ -34,10 +34,6 @@ type LayoutConfig struct {
 	Dirs []string `toml:"dirs"`
 }
 
-type ResourcesConfig struct {
-	Copy string `toml:"copy"`
-}
-
 type AssetConfig struct {
 	Asset   string `toml:"asset"`
 	Target  string `toml:"target"`
@@ -70,14 +66,13 @@ type VerifyConfig struct {
 }
 
 type Manifest struct {
-	Path      string          `toml:"-"`
-	Pack      PackConfig      `toml:"pack"`
-	Paths     PathsConfig     `toml:"paths"`
-	Build     BuildConfig     `toml:"build"`
-	Layout    LayoutConfig    `toml:"layout"`
-	Resources ResourcesConfig `toml:"resources"`
-	Packages  []PackageConfig `toml:"packages"`
-	Verify    VerifyConfig    `toml:"verify"`
+	Path     string          `toml:"-"`
+	Pack     PackConfig      `toml:"pack"`
+	Paths    PathsConfig     `toml:"paths"`
+	Build    BuildConfig     `toml:"build"`
+	Layout   LayoutConfig    `toml:"layout"`
+	Packages []PackageConfig `toml:"packages"`
+	Verify   VerifyConfig    `toml:"verify"`
 }
 
 var ErrManifestNotFound = errors.New("manifest not found")
@@ -144,8 +139,14 @@ func validatePackage(p *PackageConfig, index int) error {
 	if len(p.Assets) > 0 && (p.Target != "" || p.Install != "" || p.SHA256 != "") {
 		return fmt.Errorf("%s target/install/sha256 cannot be used with assets", ctx)
 	}
+	if strings.HasPrefix(p.Source, "url:") && len(p.Assets) > 1 {
+		return fmt.Errorf("%s.assets must contain exactly one asset for url source", ctx)
+	}
 	if p.Asset == "" && len(p.Assets) == 0 && (strings.HasPrefix(p.Source, "github:") || strings.HasPrefix(p.Source, "url:")) {
 		return fmt.Errorf("%s needs asset or assets for github/url source", ctx)
+	}
+	if p.Install == "extract" && p.Target != "" {
+		return fmt.Errorf("%s.target cannot be used with install = 'extract'", ctx)
 	}
 	if p.Asset != "" {
 		if _, err := regexp.Compile(p.Asset); err != nil {
@@ -161,6 +162,9 @@ func validatePackage(p *PackageConfig, index int) error {
 		}
 		if asset.Install != "" && asset.Install != "extract" {
 			return fmt.Errorf("%s.assets[%d].install only supports 'extract'", ctx, i+1)
+		}
+		if asset.Install == "extract" && asset.Target != "" {
+			return fmt.Errorf("%s.assets[%d].target cannot be used with install = 'extract'", ctx, i+1)
 		}
 		if err := validateSHA256(asset.SHA256); err != nil {
 			return fmt.Errorf("%s.assets[%d].sha256 %w", ctx, i+1, err)

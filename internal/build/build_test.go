@@ -4,10 +4,16 @@ import (
 	"archive/zip"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+
+	"treepack/internal/archive"
 )
 
 // TestSmokeBuild 验证 smoke 示例可以完成构建并生成预期输出。
@@ -38,7 +44,7 @@ func TestSmokeBuild(t *testing.T) {
 	if rep.HasRequiredFailures() {
 		t.Fatalf("unexpected required failures: %+v", rep.Failures)
 	}
-	if _, err := os.Stat(rep.Manifest.Paths.Work); err != nil {
+	if _, err := os.Stat(rep.Paths.RunDir); err != nil {
 		t.Fatalf("expected smoke work dir to be kept: %v", err)
 	}
 	for _, rel := range []string{
@@ -49,7 +55,7 @@ func TestSmokeBuild(t *testing.T) {
 		"packages/003-Multi_Asset/output/multi/alpha.txt",
 		"output/bin/app-payload.bin",
 	} {
-		if _, err := os.Stat(filepath.Join(rep.Manifest.Paths.Work, filepath.FromSlash(rel))); err != nil {
+		if _, err := os.Stat(filepath.Join(rep.Paths.RunDir, filepath.FromSlash(rel))); err != nil {
 			t.Fatalf("expected kept work path %s: %v", rel, err)
 		}
 	}
@@ -83,21 +89,35 @@ func TestSmokeBuild(t *testing.T) {
 	assertFileContentBuild(t, filepath.Join(outputDir, "bin", "app-payload.bin"), "payload fixture\n")
 	assertFileContentBuild(t, filepath.Join(outputDir, "nested.txt"), "copied from overlay\n")
 	assertFileContentBuild(t, filepath.Join(outputDir, "config", "resource.txt"), "resource copy ok\n")
-	if len(rep.Packages) != 4 {
-		t.Fatalf("expected 4 package records, got %d", len(rep.Packages))
+	if len(rep.Packages) != 5 {
+		t.Fatalf("expected 5 package records, got %d", len(rep.Packages))
 	}
 	if !rep.Packages[3].OK {
 		t.Fatalf("optional package should install even when optional step fails: %+v", rep.Packages[3])
 	}
+	if rep.Packages[4].Package.Name != "Static Resources" || !rep.Packages[4].OK {
+		t.Fatalf("expected resource package to be resolved last: %+v", rep.Packages[4])
+	}
 	optionalFailure := false
 	for _, result := range rep.Operations {
+		if strings.HasPrefix(result.Label, "resources ") {
+			t.Fatalf("resources should be represented as a package, not an operation: %+v", rep.Operations)
+		}
 		if result.Label == "cp missing/optional.txt -> output/optional/missing.txt" && !result.OK && !result.Required {
 			optionalFailure = true
-			break
 		}
 	}
 	if !optionalFailure {
 		t.Fatalf("expected optional step failure to be recorded: %+v", rep.Operations)
+	}
+	buildInfo, err := os.ReadFile(filepath.Join(outputDir, "BUILD_INFO.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"Resolved Paths", rep.Paths.SourceRoot, rep.Paths.OutputRoot, rep.Paths.RunDir, rep.Paths.StagedOutput} {
+		if forbidden != "" && strings.Contains(string(buildInfo), forbidden) {
+			t.Fatalf("published BUILD_INFO leaked %q:\n%s", forbidden, buildInfo)
+		}
 	}
 	zr, err := zip.OpenReader(archivePath)
 	if err != nil {
@@ -186,6 +206,232 @@ sha256 = "`+goodSum+`"
 	assertFileContentBuild(t, filepath.Join(outputDir, "good.bin"), "good")
 }
 
+func TestBuildStepRequiredInheritanceAndOverrides(t *testing.T) {
+	t.Run("optional package inherits optional and merges output", func(t *testing.T) {
+		root := t.TempDir()
+		sourceDir := filepath.Join(root, "src")
+		outputDir := filepath.Join(root, "out")
+		mustWriteBuildTest(t, filepath.Join(sourceDir, "asset.bin"), "asset")
+		mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), `[pack]
+name = "Optional Inherit"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[[packages]]
+name = "Asset"
+required = false
+source = "file:asset.bin"
+target = "asset.bin"
+[[packages.steps]]
+op = "cp"
+from = "missing"
+to = "output/missing"
+`)
+		rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+		rep, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertFileContentBuild(t, filepath.Join(outputDir, "asset.bin"), "asset")
+		if len(rep.Operations) != 1 || rep.Operations[0].Required || rep.Operations[0].OK || !rep.Packages[0].OK {
+			t.Fatalf("unexpected inherited optional result: %+v / %+v", rep.Operations, rep.Packages)
+		}
+	})
+
+	t.Run("required package optional step continues", func(t *testing.T) {
+		root := t.TempDir()
+		sourceDir := filepath.Join(root, "src")
+		outputDir := filepath.Join(root, "out")
+		mustWriteBuildTest(t, filepath.Join(sourceDir, "asset.bin"), "asset")
+		mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), `[pack]
+name = "Required Override"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[[packages]]
+name = "Asset"
+source = "file:asset.bin"
+target = "asset.bin"
+[[packages.steps]]
+op = "cp"
+from = "missing"
+to = "output/missing"
+required = false
+`)
+		rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+		rep, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		assertFileContentBuild(t, filepath.Join(outputDir, "asset.bin"), "asset")
+		if rep.Operations[0].Required || !rep.Packages[0].OK {
+			t.Fatalf("unexpected explicit optional result: %+v / %+v", rep.Operations, rep.Packages)
+		}
+	})
+
+	t.Run("optional package required step stops package only", func(t *testing.T) {
+		root := t.TempDir()
+		sourceDir := filepath.Join(root, "src")
+		outputDir := filepath.Join(root, "out")
+		mustWriteBuildTest(t, filepath.Join(sourceDir, "optional.bin"), "optional")
+		mustWriteBuildTest(t, filepath.Join(sourceDir, "good.bin"), "good")
+		mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), `[pack]
+name = "Optional Override"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[[packages]]
+name = "Optional"
+required = false
+source = "file:optional.bin"
+target = "optional.bin"
+[[packages.steps]]
+op = "cp"
+from = "missing"
+to = "output/missing"
+required = true
+[[packages]]
+name = "Good"
+source = "file:good.bin"
+target = "good.bin"
+`)
+		rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+		rep, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if rep.HasRequiredFailures() || rep.Packages[0].OK || !rep.Operations[0].Required {
+			t.Fatalf("unexpected optional package status: %+v", rep)
+		}
+		if _, err := os.Stat(filepath.Join(outputDir, "optional.bin")); !os.IsNotExist(err) {
+			t.Fatalf("failed package output should not merge")
+		}
+		assertFileContentBuild(t, filepath.Join(outputDir, "good.bin"), "good")
+	})
+
+	t.Run("required package inherits required and blocks", func(t *testing.T) {
+		root := t.TempDir()
+		sourceDir := filepath.Join(root, "src")
+		outputDir := filepath.Join(root, "out")
+		mustWriteBuildTest(t, filepath.Join(sourceDir, "asset.bin"), "asset")
+		mustWriteBuildTest(t, filepath.Join(outputDir, "old.txt"), "old")
+		mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), `[pack]
+name = "Required Inherit"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[[packages]]
+name = "Asset"
+source = "file:asset.bin"
+target = "asset.bin"
+[[packages.steps]]
+op = "cp"
+from = "missing"
+to = "output/missing"
+`)
+		rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+		rep, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"})
+		if err == nil || rep == nil || !rep.HasRequiredFailures() || !rep.Operations[0].Required {
+			t.Fatalf("expected inherited required failure, got %v / %+v", err, rep)
+		}
+		assertFileContentBuild(t, filepath.Join(outputDir, "old.txt"), "old")
+	})
+}
+
+func TestBuildPreflightRejectsInvalidPathsBeforeHTTP(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte("asset"))
+	}))
+	defer server.Close()
+
+	tests := []struct {
+		name  string
+		extra string
+		want  string
+	}{
+		{"target", `target = "../escape"`, "packages[1].target"},
+		{"step", "[[packages.steps]]\nop = \"touch\"\npath = \"../escape\"", "packages[1].steps[1].path"},
+		{"layout", "[layout]\ndirs = [\"../escape\"]", "layout.dirs[1]"},
+		{"verify", "[verify]\nfiles = [\"../escape\"]", "verify.files[1]"},
+		{"build info", "[build]\nbuild_info = \"../escape\"", "build.build_info"},
+		{"archive template", "[build]\narchive = \"{unknown}.zip\"", "build.archive"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			requests.Store(0)
+			root := t.TempDir()
+			sourceDir := filepath.Join(root, "src")
+			outputDir := filepath.Join(root, "out")
+			if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			mustWriteBuildTest(t, filepath.Join(outputDir, "old.txt"), "old")
+			manifestBody := `[pack]
+name = "Preflight"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[[packages]]
+name = "Remote"
+source = "URL"
+asset = "payload"
+` + tc.extra + "\n"
+			mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), manifestBody)
+			rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+			rewriteMainTestFileForBuild(t, filepath.Join(root, "kit.toml"), "URL", "url:"+server.URL+"/payload.bin")
+			_, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"})
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q error, got %v", tc.want, err)
+			}
+			if requests.Load() != 0 {
+				t.Fatalf("preflight made %d HTTP requests", requests.Load())
+			}
+			assertFileContentBuild(t, filepath.Join(outputDir, "old.txt"), "old")
+		})
+	}
+}
+
+func TestBuildRejectsMultipleURLAssetsWithoutHTTP(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		_, _ = w.Write([]byte("asset"))
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "src")
+	outputDir := filepath.Join(root, "out")
+	if err := os.MkdirAll(sourceDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mustWriteBuildTest(t, filepath.Join(outputDir, "old.txt"), "old")
+	mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), `[pack]
+name = "URL Assets"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[[packages]]
+name = "Remote"
+source = "URL"
+[[packages.assets]]
+asset = "payload"
+[[packages.assets]]
+asset = "other"
+`)
+	rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+	rewriteMainTestFileForBuild(t, filepath.Join(root, "kit.toml"), "URL", "url:"+server.URL+"/payload.bin")
+	_, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"})
+	if err == nil || !strings.Contains(err.Error(), "packages[1].assets") {
+		t.Fatalf("expected URL asset cardinality error, got %v", err)
+	}
+	if requests.Load() != 0 {
+		t.Fatalf("manifest validation made %d HTTP requests", requests.Load())
+	}
+	assertFileContentBuild(t, filepath.Join(outputDir, "old.txt"), "old")
+}
+
 func TestBuildRejectsSHA256ForDirectoryAsset(t *testing.T) {
 	root := t.TempDir()
 	sourceDir := filepath.Join(root, "src")
@@ -211,13 +457,14 @@ sha256 = "`+strings.Repeat("1", 64)+`"
 	}
 }
 
-func TestBuildArchiveFailurePreservesExistingOutput(t *testing.T) {
+func TestBuildArchiveIgnoresFixedTmpPath(t *testing.T) {
 	root := t.TempDir()
 	sourceDir := filepath.Join(root, "src")
 	outputDir := filepath.Join(root, "out")
 	archivePath := filepath.Join(root, "pack.zip")
 	mustWriteBuildTest(t, filepath.Join(sourceDir, "resources", "new.txt"), "new")
 	mustWriteBuildTest(t, filepath.Join(outputDir, "old.txt"), "old")
+	mustWriteBuildTest(t, archivePath, "old-archive")
 	if err := os.MkdirAll(archivePath+".tmp", 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -229,17 +476,68 @@ source = "SOURCE"
 output = "OUTPUT"
 [build]
 archive = "ARCHIVE"
-[resources]
-copy = "resources"
+[[packages]]
+name = "Resources"
+group = "resources"
+source = "file:resources"
+target = "."
 `)
 	rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
 	rewriteMainTestFileForBuild(t, filepath.Join(root, "kit.toml"), "ARCHIVE", filepath.ToSlash(archivePath))
-	if _, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"}); err == nil {
-		t.Fatal("expected archive creation failure")
+	if _, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	assertFileContentBuild(t, filepath.Join(outputDir, "new.txt"), "new")
+	assertFileContentBuild(t, filepath.Join(archivePath+".tmp", "blocker"), "block")
+	reader, err := zip.OpenReader(archivePath)
+	if err != nil {
+		t.Fatalf("expected new archive: %v", err)
+	}
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	leftovers, err := filepath.Glob(filepath.Join(root, ".treepack-archive-*"))
+	if err != nil || len(leftovers) != 0 {
+		t.Fatalf("temporary archive leftovers: %v, %v", leftovers, err)
+	}
+}
+
+func TestBuildArchiveFailurePreservesExistingArtifacts(t *testing.T) {
+	root := t.TempDir()
+	sourceDir := filepath.Join(root, "src")
+	outputDir := filepath.Join(root, "out")
+	archivePath := filepath.Join(root, "pack.zip")
+	mustWriteBuildTest(t, filepath.Join(sourceDir, "resources", "new.txt"), "new")
+	mustWriteBuildTest(t, filepath.Join(outputDir, "old.txt"), "old")
+	mustWriteBuildTest(t, archivePath, "old-archive")
+	mustWriteBuildTest(t, filepath.Join(root, "kit.toml"), `[pack]
+name = "Archive Fail"
+[paths]
+source = "SOURCE"
+output = "OUTPUT"
+[build]
+archive = "ARCHIVE"
+[[packages]]
+name = "Resources"
+source = "file:resources"
+target = "."
+`)
+	rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
+	rewriteMainTestFileForBuild(t, filepath.Join(root, "kit.toml"), "ARCHIVE", filepath.ToSlash(archivePath))
+	oldMakeArchive := makeArchive
+	makeArchive = func(string, string, archive.Options) error { return errors.New("injected archive failure") }
+	defer func() { makeArchive = oldMakeArchive }()
+	if _, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"}); err == nil || !strings.Contains(err.Error(), "injected archive failure") {
+		t.Fatalf("expected injected archive failure, got %v", err)
 	}
 	assertFileContentBuild(t, filepath.Join(outputDir, "old.txt"), "old")
+	assertFileContentBuild(t, archivePath, "old-archive")
 	if _, err := os.Stat(filepath.Join(outputDir, "new.txt")); !os.IsNotExist(err) {
 		t.Fatalf("new output should not be published after archive failure")
+	}
+	leftovers, err := filepath.Glob(filepath.Join(root, ".treepack-archive-*"))
+	if err != nil || len(leftovers) != 0 {
+		t.Fatalf("temporary archive leftovers: %v, %v", leftovers, err)
 	}
 }
 
@@ -338,8 +636,8 @@ output = "OUTPUT"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Manifest.Paths.Output != filepath.Join(root, "out") {
-		t.Fatalf("unexpected output: %s", rep.Manifest.Paths.Output)
+	if rep.Paths.OutputRoot != filepath.Join(root, "out") {
+		t.Fatalf("unexpected output: %s", rep.Paths.OutputRoot)
 	}
 	if _, err := os.Stat(filepath.Join(root, "out", "BUILD_INFO.txt")); err != nil {
 		t.Fatalf("expected build info: %v", err)
@@ -364,8 +662,11 @@ source = "SOURCE"
 output = "OUTPUT"
 [build]
 archive = "filtered.zip"
-[resources]
-copy = "resources"
+[[packages]]
+name = "Resources"
+group = "resources"
+source = "file:resources"
+target = "."
 `)
 	rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
 	if _, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"}); err != nil {
@@ -401,8 +702,11 @@ source = "SOURCE"
 output = "OUTPUT"
 [build]
 archive = "raw.zip"
-[resources]
-copy = "resources"
+[[packages]]
+name = "Resources"
+group = "resources"
+source = "file:resources"
+target = "."
 `)
 	rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
 	if _, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), RawArchive: true, Version: "test"}); err != nil {
@@ -455,7 +759,7 @@ name = "Keep Work"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := os.Stat(rep.Manifest.Paths.Work); err != nil {
+	if _, err := os.Stat(rep.Paths.RunDir); err != nil {
 		t.Fatalf("expected kept work dir: %v", err)
 	}
 }
@@ -558,8 +862,11 @@ target = "asset.txt"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Manifest.Paths.Source != sourceDir {
-		t.Fatalf("source = %s, want %s", rep.Manifest.Paths.Source, sourceDir)
+	if rep.Paths.SourceRoot != sourceDir {
+		t.Fatalf("source = %s, want %s", rep.Paths.SourceRoot, sourceDir)
+	}
+	if rep.Manifest.Paths.Source != "src" || rep.Manifest.Paths.Output != "out" || rep.Manifest.Paths.Work != "work" {
+		t.Fatalf("manifest paths were mutated: %+v", rep.Manifest.Paths)
 	}
 	if _, err := os.Stat(filepath.Join(project, "out", "asset.txt")); err != nil {
 		t.Fatalf("expected manifest-relative output: %v", err)
@@ -605,8 +912,14 @@ target = "asset.txt"
 	if err != nil {
 		t.Fatal(err)
 	}
-	if rep.Manifest.Paths.Output != filepath.Join(cwd, "out") {
-		t.Fatalf("output = %s, want %s", rep.Manifest.Paths.Output, filepath.Join(cwd, "out"))
+	if rep.Paths.OutputRoot != filepath.Join(cwd, "out") {
+		t.Fatalf("output = %s, want %s", rep.Paths.OutputRoot, filepath.Join(cwd, "out"))
+	}
+	if rep.Manifest.Paths.Source != "" || rep.Manifest.Paths.Output != "" || rep.Manifest.Paths.Work != "" {
+		t.Fatalf("CLI overrides should not mutate manifest paths: %+v", rep.Manifest.Paths)
+	}
+	if rep.Manifest.Build.KeepWork {
+		t.Fatalf("CLI keep-work should not mutate manifest build config: %+v", rep.Manifest.Build)
 	}
 	if _, err := os.Stat(filepath.Join(cwd, "out", "asset.txt")); err != nil {
 		t.Fatalf("expected cwd-relative output: %v", err)

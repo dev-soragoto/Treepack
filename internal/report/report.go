@@ -3,6 +3,7 @@ package report
 import (
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strings"
 
 	"treepack/internal/manifest"
@@ -19,7 +20,15 @@ type PackageRecord struct {
 }
 
 type BuildReport struct {
-	Manifest     *manifest.Manifest
+	Manifest *manifest.Manifest
+	Paths    struct {
+		SourceRoot   string
+		OutputRoot   string
+		WorkBase     string
+		RunDir       string
+		StagedOutput string
+		KeepWork     bool
+	}
 	Packages     []PackageRecord
 	Operations   []ops.OperationResult
 	Verification []verify.Result
@@ -52,15 +61,10 @@ func (r *BuildReport) AddPackageFailure(pkg manifest.PackageConfig, message stri
 	r.Failures = append(r.Failures, fmt.Sprintf("%s package failed: %s: %s", prefix, pkg.Name, message))
 }
 
-// HasRequiredFailures 判断报告中是否存在必需包、必需操作或校验失败。
+// HasRequiredFailures 判断报告中是否存在必需包或校验失败。
 func (r *BuildReport) HasRequiredFailures() bool {
 	for _, record := range r.Packages {
 		if record.Package.IsRequired() && !record.OK {
-			return true
-		}
-	}
-	for _, result := range r.Operations {
-		if result.Required && !result.OK {
 			return true
 		}
 	}
@@ -146,16 +150,44 @@ func BuildInfo(r *BuildReport, version string) string {
 	} else {
 		lines = append(lines, r.Failures...)
 	}
-	return strings.Join(lines, "\n") + "\n"
+	return sanitizeResolvedPaths(strings.Join(lines, "\n")+"\n", r)
 }
 
 // sanitizeSource 清理来源字符串中不适合写入报告的 URL 敏感部分。
 func sanitizeSource(value string) string {
+	if raw, ok := strings.CutPrefix(value, "file:"); ok {
+		if filepath.IsAbs(filepath.FromSlash(raw)) {
+			return "file:<local>"
+		}
+		return value
+	}
 	raw, ok := strings.CutPrefix(value, "url:")
 	if !ok {
 		return value
 	}
 	return "url:" + sanitizeAssetURL(raw)
+}
+
+// sanitizeResolvedPaths removes local resolved paths from the published report while preserving them in memory.
+func sanitizeResolvedPaths(value string, r *BuildReport) string {
+	paths := []string{
+		r.Paths.StagedOutput,
+		r.Paths.RunDir,
+		r.Paths.SourceRoot,
+		r.Paths.OutputRoot,
+		r.Paths.WorkBase,
+	}
+	for _, path := range paths {
+		if path == "" {
+			continue
+		}
+		value = strings.ReplaceAll(value, path, "<local-path>")
+		slashed := filepath.ToSlash(path)
+		if slashed != path {
+			value = strings.ReplaceAll(value, slashed, "<local-path>")
+		}
+	}
+	return value
 }
 
 // sanitizeAssetURL 移除 URL 中的用户信息、查询参数和片段。

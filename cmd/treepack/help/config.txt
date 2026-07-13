@@ -1,0 +1,10 @@
+Config
+
+Treepack reads one TOML manifest. The default manifest path is kit.toml, and
+--config can point at another file.
+
+Top-level tables include pack, paths, build, layout, packages, and verify.
+Operations are declared only as nested [[packages.steps]] entries; there is no
+top-level ops table. build.keep_work and CLI --keep-work are combined with OR,
+so either setting keeps the run directory.
+Manifest-relative paths are resolved from the directory containing the manifest.

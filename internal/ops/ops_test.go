@@ -138,7 +138,7 @@ func TestCpRegexDoesNotMatchDeepEntries(t *testing.T) {
 	work := t.TempDir()
 	mustWrite(t, filepath.Join(work, "search", "deep", "test.txt"), "deep")
 
-	result := Run(OperationConfig{Op: "cp_regex", From: "search", Regex: `^test\.txt$`, To: "save"}, work, testFS{})
+	result := Run(OperationConfig{Op: "cp_regex", From: "search", Regex: `^test\.txt$`, To: "save"}, work, testFS{}, true)
 	if result.OK {
 		t.Fatalf("expected cp_regex without direct matches to fail")
 	}
@@ -157,7 +157,7 @@ func TestCpRegexRequiresDirectoryAndMatch(t *testing.T) {
 		{Op: "cp_regex", From: "file.txt", Regex: `.*`, To: "save"},
 		{Op: "cp_regex", From: "empty", Regex: `nomatch`, To: "save"},
 	} {
-		if result := Run(op, work, testFS{}); result.OK {
+		if result := Run(op, work, testFS{}, true); result.OK {
 			t.Fatalf("expected failure: %+v", op)
 		}
 	}
@@ -175,7 +175,7 @@ func TestCpRejectsOverlappingPaths(t *testing.T) {
 		{Op: "cp", From: "dir/.", To: "dir/sub"},
 		{Op: "cp_regex", From: "dir", Regex: `.*`, To: "dir/sub"},
 	} {
-		if result := Run(op, work, testFS{}); result.OK {
+		if result := Run(op, work, testFS{}, true); result.OK {
 			t.Fatalf("expected overlap copy to fail: %+v", op)
 		}
 	}
@@ -192,7 +192,7 @@ func TestCpRegexRejectsSymlinkOverlap(t *testing.T) {
 	if err := os.Symlink(filepath.Join(work, "src"), filepath.Join(work, "link")); err != nil {
 		t.Fatal(err)
 	}
-	result := Run(OperationConfig{Op: "cp_regex", From: "src", Regex: `.*`, To: "link"}, work, testFS{})
+	result := Run(OperationConfig{Op: "cp_regex", From: "src", Regex: `.*`, To: "link"}, work, testFS{}, true)
 	if result.OK {
 		t.Fatal("expected symlink overlap to fail")
 	}
@@ -236,7 +236,7 @@ func TestRunRejectsPathTraversal(t *testing.T) {
 		{Op: "cp_regex", From: "../outside", Regex: `.*`, To: "copied"},
 		{Op: "cp_regex", From: ".", Regex: `.*`, To: "../outside"},
 	} {
-		if result := Run(op, work, testFS{}); result.OK {
+		if result := Run(op, work, testFS{}, true); result.OK {
 			t.Fatalf("expected traversal op to fail: %+v", op)
 		}
 	}
@@ -246,8 +246,31 @@ func TestRunRejectsPathTraversal(t *testing.T) {
 // runOK 执行操作并断言操作成功。
 func runOK(t *testing.T, work string, op OperationConfig) {
 	t.Helper()
-	if result := Run(op, work, testFS{}); !result.OK {
+	if result := Run(op, work, testFS{}, true); !result.OK {
 		t.Fatalf("%s failed: %s", result.Label, result.Message)
+	}
+}
+
+func TestRunResolvesRequiredFromPackageDefault(t *testing.T) {
+	falseValue := false
+	trueValue := true
+	for _, tc := range []struct {
+		name           string
+		required       *bool
+		packageDefault bool
+		want           bool
+	}{
+		{"inherit true", nil, true, true},
+		{"inherit false", nil, false, false},
+		{"override false", &falseValue, true, false},
+		{"override true", &trueValue, false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			result := Run(OperationConfig{Op: "cp", From: "missing", To: "output", Required: tc.required}, t.TempDir(), testFS{}, tc.packageDefault)
+			if result.OK || result.Required != tc.want {
+				t.Fatalf("result = %+v, want required %t", result, tc.want)
+			}
+		})
 	}
 }
 

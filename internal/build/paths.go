@@ -10,15 +10,16 @@ import (
 )
 
 type ResolvedPaths struct {
-	Source   string
-	Output   string
-	WorkBase string
-	RunDir   string
-	KeepWork bool
+	SourceRoot   string
+	OutputRoot   string
+	WorkBase     string
+	RunDir       string
+	StagedOutput string
+	KeepWork     bool
 }
 
 // resolveBuildPaths 解析构建涉及的源目录、输出目录、工作目录和保留策略。
-func resolveBuildPaths(m *manifest.Manifest, options Options) (sourceDir, outputDir, workDir string, keepWork bool, err error) {
+func resolveBuildPaths(m *manifest.Manifest, options Options) (ResolvedPaths, error) {
 	manifestDir := filepath.Dir(m.Path)
 	sourceValue := m.Paths.Source
 	sourceBase := manifestDir
@@ -38,58 +39,59 @@ func resolveBuildPaths(m *manifest.Manifest, options Options) (sourceDir, output
 		workValue = options.WorkDir
 		workBasePath = "."
 	}
-	keepWork = m.Build.KeepWork || options.KeepWork
+	keepWork := m.Build.KeepWork || options.KeepWork
 	if sourceValue == "" {
-		return "", "", "", false, fmt.Errorf("paths.source is required")
+		return ResolvedPaths{}, fmt.Errorf("paths.source is required")
 	}
 	if outputValue == "" {
-		return "", "", "", false, fmt.Errorf("paths.output is required")
+		return ResolvedPaths{}, fmt.Errorf("paths.output is required")
 	}
-	sourceDir, err = resolveConfiguredPath(sourceBase, sourceValue)
+	sourceDir, err := resolveConfiguredPath(sourceBase, sourceValue)
 	if err != nil {
-		return "", "", "", false, fmt.Errorf("invalid paths.source: %w", err)
+		return ResolvedPaths{}, fmt.Errorf("invalid paths.source: %w", err)
 	}
-	outputDir, err = resolveConfiguredPath(outputBase, outputValue)
+	outputDir, err := resolveConfiguredPath(outputBase, outputValue)
 	if err != nil {
-		return "", "", "", false, fmt.Errorf("invalid paths.output: %w", err)
+		return ResolvedPaths{}, fmt.Errorf("invalid paths.output: %w", err)
 	}
+	workDir := ""
 	if workValue != "" {
 		workDir, err = resolveConfiguredPath(workBasePath, workValue)
 		if err != nil {
-			return "", "", "", false, fmt.Errorf("invalid paths.work: %w", err)
+			return ResolvedPaths{}, fmt.Errorf("invalid paths.work: %w", err)
 		}
 	}
 	_, kind, err := fsutil.ValidateEntry(sourceDir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return "", "", "", false, fmt.Errorf("paths.source must exist: %s", sourceDir)
+			return ResolvedPaths{}, fmt.Errorf("paths.source must exist: %s", sourceDir)
 		}
-		return "", "", "", false, fmt.Errorf("invalid paths.source %s: %w", sourceDir, err)
+		return ResolvedPaths{}, fmt.Errorf("invalid paths.source %s: %w", sourceDir, err)
 	}
 	if kind != fsutil.EntryDir {
-		return "", "", "", false, fmt.Errorf("paths.source is not a directory: %s", sourceDir)
+		return ResolvedPaths{}, fmt.Errorf("paths.source is not a directory: %s", sourceDir)
 	}
 	configPath := m.Path
 	if err := rejectPathInside("config", configPath, "output", outputDir); err != nil {
-		return "", "", "", false, err
+		return ResolvedPaths{}, err
 	}
 	if workDir != "" {
 		if err := rejectPathInside("config", configPath, "work", workDir); err != nil {
-			return "", "", "", false, err
+			return ResolvedPaths{}, err
 		}
 	}
 	if err := rejectOverlap("paths.source", sourceDir, "paths.output", outputDir); err != nil {
-		return "", "", "", false, err
+		return ResolvedPaths{}, err
 	}
 	if workDir != "" {
 		if err := rejectOverlap("paths.source", sourceDir, "paths.work", workDir); err != nil {
-			return "", "", "", false, err
+			return ResolvedPaths{}, err
 		}
 		if err := rejectOverlap("paths.output", outputDir, "paths.work", workDir); err != nil {
-			return "", "", "", false, err
+			return ResolvedPaths{}, err
 		}
 	}
-	return sourceDir, outputDir, workDir, keepWork, nil
+	return ResolvedPaths{SourceRoot: sourceDir, OutputRoot: outputDir, WorkBase: workDir, KeepWork: keepWork}, nil
 }
 
 // resolveConfiguredPath 将清单路径按指定基准目录解析为绝对路径。
@@ -165,6 +167,19 @@ func validateArchivePath(archivePath, sourceDir, outputDir, workBase, runDir, ma
 		}
 	}
 	return nil
+}
+
+// resolveArchivePath renders and resolves the configured archive path from the manifest directory.
+func resolveArchivePath(m *manifest.Manifest) (string, error) {
+	archiveName, err := renderTemplate(m.Build.Archive, m.Pack.Name, m.Pack.Version)
+	if err != nil {
+		return "", fmt.Errorf("invalid build.archive: %w", err)
+	}
+	archivePath, err := resolveConfiguredPath(filepath.Dir(m.Path), archiveName)
+	if err != nil {
+		return "", fmt.Errorf("invalid build.archive: %w", err)
+	}
+	return archivePath, nil
 }
 
 // validateRunDir 校验运行目录不会与源目录或输出目录重叠。

@@ -7,11 +7,11 @@ import (
 
 	"treepack/internal/archive"
 	"treepack/internal/fsutil"
-	"treepack/internal/logging"
 	"treepack/internal/manifest"
-	"treepack/internal/ops"
 	"treepack/internal/report"
 )
+
+var makeArchive = archive.MakeZip
 
 // createLayout 在输出目录中创建清单声明的目录布局。
 func createLayout(m *manifest.Manifest, outputDir string) error {
@@ -27,44 +27,16 @@ func createLayout(m *manifest.Manifest, outputDir string) error {
 	return nil
 }
 
-// copyResources 将清单中的资源目录复制到构建输出并记录操作结果。
-func copyResources(m *manifest.Manifest, sourceDir, outputDir string, fs fsAdapter, rep *report.BuildReport, logger *logging.Logger) {
-	if m.Resources.Copy == "" {
-		return
-	}
-	src, err := fsutil.ResolveUnder(sourceDir, m.Resources.Copy)
-	result := ops.OperationResult{Op: "cp", Label: "resources " + m.Resources.Copy + " -> .", Required: true, OK: true}
-	if logger != nil && err == nil {
-		logger.Info("copying resources: %s -> %s", src, outputDir)
-	}
-	if err != nil {
-		result.OK = false
-		result.Message = err.Error()
-	} else if _, kind, err := fsutil.ValidateEntry(src); err != nil || kind != fsutil.EntryDir {
-		msg := src
-		if err != nil {
-			msg = err.Error()
-		}
-		result.OK = false
-		result.Message = msg
-	} else if err := fs.CopyTreeContents(src, outputDir); err != nil {
-		result.OK = false
-		result.Message = err.Error()
-	}
-	rep.AddOperation(result)
-	logOperation(result, logger)
-}
-
 // writeReports 生成构建报告文件并写入输出目录。
-func writeReports(m *manifest.Manifest, outputDir string, rep *report.BuildReport, version string) error {
-	buildInfo, err := fsutil.ResolveUnder(outputDir, m.Build.BuildInfo)
+func writeReports(ctx *BuildContext) error {
+	buildInfo, err := fsutil.ResolveUnder(ctx.Paths.StagedOutput, ctx.Manifest.Build.BuildInfo)
 	if err != nil {
 		return fmt.Errorf("invalid build.build_info: %w", err)
 	}
 	if err := fsutil.EnsureParent(buildInfo); err != nil {
 		return err
 	}
-	return os.WriteFile(buildInfo, []byte(report.BuildInfo(rep, version)), 0o644)
+	return os.WriteFile(buildInfo, []byte(report.BuildInfo(ctx.Report, ctx.Options.Version)), 0o644)
 }
 
 // cleanDir 清空指定目录并重新创建它。
@@ -76,52 +48,50 @@ func cleanDir(path string) error {
 }
 
 // finalizeOutput writes staged output to the final output directory and optionally archives it.
-func finalizeOutput(m *manifest.Manifest, sourceDir, outputDir, workBase, runDir, stagedOutput string, fs fsAdapter, rep *report.BuildReport, logger *logging.Logger, rawArchive bool) (*report.BuildReport, error) {
-	archivePath := ""
+func finalizeOutput(ctx *BuildContext) (*report.BuildReport, error) {
+	m := ctx.Manifest
 	tempArchivePath := ""
 	if m.Build.Archive != "" {
-		archiveName, err := renderTemplate(m.Build.Archive, m.Pack.Name, m.Pack.Version)
-		if err != nil {
-			return rep, fmt.Errorf("invalid build.archive: %w", err)
-		}
-		archivePath, err = resolveConfiguredPath(filepath.Dir(m.Path), archiveName)
-		if err != nil {
-			return rep, fmt.Errorf("invalid build.archive: %w", err)
-		}
-		if err := validateArchivePath(archivePath, sourceDir, outputDir, workBase, runDir, m.Path); err != nil {
-			return rep, err
-		}
+		archivePath := ctx.ArchivePath
 		if err := os.MkdirAll(filepath.Dir(archivePath), 0o755); err != nil {
-			return rep, err
+			return ctx.Report, err
 		}
-		tempArchivePath = archivePath + ".tmp"
-		_ = os.Remove(tempArchivePath)
-		if logger != nil {
-			logger.Info("creating archive: %s", archivePath)
+		temp, err := os.CreateTemp(filepath.Dir(archivePath), ".treepack-archive-*")
+		if err != nil {
+			return ctx.Report, err
 		}
-		if err := archive.MakeZip(stagedOutput, tempArchivePath, archive.Options{Raw: rawArchive}); err != nil {
+		tempArchivePath = temp.Name()
+		if err := temp.Close(); err != nil {
 			_ = os.Remove(tempArchivePath)
-			return rep, err
+			return ctx.Report, err
+		}
+		if err := os.Remove(tempArchivePath); err != nil {
+			return ctx.Report, err
+		}
+		defer func() { _ = os.Remove(tempArchivePath) }()
+		if ctx.Logger != nil {
+			ctx.Logger.Info("creating archive: %s", archivePath)
+		}
+		if err := makeArchive(ctx.Paths.StagedOutput, tempArchivePath, archive.Options{Raw: ctx.Options.RawArchive}); err != nil {
+			return ctx.Report, err
 		}
 	}
-	if logger != nil {
-		logger.Info("writing final output: %s -> %s", stagedOutput, outputDir)
+	if ctx.Logger != nil {
+		ctx.Logger.Info("writing final output: %s -> %s", ctx.Paths.StagedOutput, ctx.Paths.OutputRoot)
 	}
-	if err := cleanDir(outputDir); err != nil {
-		return rep, err
+	if err := cleanDir(ctx.Paths.OutputRoot); err != nil {
+		return ctx.Report, err
 	}
-	if err := fs.CopyTreeContents(stagedOutput, outputDir); err != nil {
-		return rep, err
+	if err := ctx.FS.CopyTreeContents(ctx.Paths.StagedOutput, ctx.Paths.OutputRoot); err != nil {
+		return ctx.Report, err
 	}
 	if m.Build.Archive != "" {
-		if err := os.Remove(archivePath); err != nil && !os.IsNotExist(err) {
-			_ = os.Remove(tempArchivePath)
-			return rep, err
+		if err := os.Remove(ctx.ArchivePath); err != nil && !os.IsNotExist(err) {
+			return ctx.Report, err
 		}
-		if err := os.Rename(tempArchivePath, archivePath); err != nil {
-			_ = os.Remove(tempArchivePath)
-			return rep, err
+		if err := os.Rename(tempArchivePath, ctx.ArchivePath); err != nil {
+			return ctx.Report, err
 		}
 	}
-	return rep, nil
+	return ctx.Report, nil
 }

@@ -1,0 +1,6 @@
+Verify
+
+verify.files requires regular files, verify.dirs requires directories, and
+verify.absent requires that no file or directory exists at the configured path.
+
+Verification failures are required build failures and are included in BUILD_INFO.

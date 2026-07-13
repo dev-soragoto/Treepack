@@ -62,9 +62,9 @@ treepack [-c kit.toml] [-s DIR] [-o DIR] [--work-dir DIR] [--keep-work] [--raw-a
 - `--keep-work`：保留本次构建 work run dir。
 - `--raw-archive`：生成 zip 时按 `paths.output` 原样归档，保留默认会过滤的系统元数据。
 - `-p`, `--proxy`：下载代理，例如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:7890`。
-- `--download-retries`：下载总尝试次数，包含首次请求，默认 `3`。只重试 `429`、`502`、`503`、`504`，并遵循 `Retry-After`。
+- `--download-retries`：下载总尝试次数，包含首次请求，默认 `3`。网络请求错误以及 `429`、`502`、`503`、`504` 状态码会重试，并遵循 `Retry-After`。
 - `-v`, `--version`：显示版本号。
-- `-h`, `--help`：显示帮助。
+- `-h`, `--help`：显示总览帮助。主题帮助使用 flag 形式，例如 `treepack --help config`、`treepack -h packages`。可用主题包括 `config`、`packages`、`build`、`paths`、`verify`、`examples`。
 - `--github-token`：用于 GitHub release API 和 GitHub asset 下载的 token。推荐优先使用环境变量。
 
 GitHub token 优先级：
@@ -88,6 +88,8 @@ GitHub token 优先级：
 `paths.output`（以及 CLI 的 `-o` / `--output`）是构建结果目录，不是受保护的存储目录。一旦 Treepack 进入输出发布阶段，会先删除 output 中原有的全部内容，再写入本次构建结果。
 
 Treepack 不保留上一次成功构建的 output，也不提供事务、回滚或失败恢复。配置了 archive 时会先从 staged output 创建临时 zip，zip 创建成功后才发布 final output；但如果 final output 发布、archive rename 或进程中断失败，命令可能以失败状态退出，output 仍可能已被删除，或包含部分本次构建产生的文件和目录。不要将重要文件、手工维护的内容或唯一副本放在 output 中。
+
+archive 临时文件使用最终 archive 目录内的随机名称，不占用或删除固定的 `<archive>.tmp`。ZIP 创建失败时不会发布新 output，也不会替换旧 archive，只会清理本次随机临时文件。
 
 Treepack 主要保证文件内容、目录结构、覆盖语义、路径边界和 ZIP 结构安全。它不限制下载大小、ZIP 解压大小、ZIP entry 数量、压缩比、磁盘占用或耗时；磁盘空间、资源可信度和运行环境容量由使用者自行控制。
 
@@ -138,7 +140,7 @@ archive = "../smoke-{pack.version}.zip"
 
 CLI 覆盖路径 `-s` / `--source`、`-o` / `--output`、`--work-dir` 的相对路径按当前工作目录解析，用来明确覆盖 manifest 中的路径。
 
-`file:` source 和 `[resources].copy` 是第二层路径：它们不是相对当前工作目录，而是相对已经解析好的 `paths.source`。例如：
+`file:` source 是第二层路径：它不是相对当前工作目录，而是相对已经解析好的 `paths.source`。例如：
 
 ```toml
 [paths]
@@ -167,6 +169,7 @@ work = ".treepack/work"
 [build]
 archive = "out-{pack.version}.zip"
 build_info = "BUILD_INFO.txt"
+keep_work = false
 
 [layout]
 dirs = [
@@ -206,6 +209,8 @@ absent = [
 ]
 ```
 
+`build.keep_work` 与 CLI `--keep-work` 使用 OR 关系：任一为 `true` 都会保留本次 work run dir。
+
 ## Source 语法
 
 ```text
@@ -225,7 +230,7 @@ file:resources/local_dir
 
 GitHub release asset 当前仅保证公开 release asset 下载。`--github-token` / `GITHUB_TOKEN` 会用于 release API 请求；私有仓库 release asset 的专用下载流程暂不作为兼容承诺。
 
-`file:` 路径从 `paths.source` 解析，并且必须留在 `paths.source` 内。`file:` 指向目录且不写 `asset` / `assets` 时，整个目录会作为一个目录资产安装。`file:` 指向目录且写了 `asset` / `assets` 时，该目录会作为资产池，正则只匹配直接子项名称，匹配结果可以是文件或目录，但必须唯一。
+`file:` 路径从 `paths.source` 解析，并且必须留在 `paths.source` 内。`file:` 直接指向普通文件时可以不写 `asset`；写了 `asset` 时，正则必须以 Go `MatchString` 语义匹配该文件的 basename。`file:` 指向目录且不写 `asset` / `assets` 时，整个目录会作为一个目录资产安装。`file:` 指向目录且写了 `asset` / `assets` 时，该目录会作为资产池，正则只匹配直接子项名称，匹配结果可以是文件或目录，但必须唯一。
 
 直接 URL 示例：
 
@@ -240,6 +245,8 @@ required = true
 
 下载进度会输出到 `stderr`，不会写入 `BUILD_INFO.txt`。
 
+一个 `url:` 只能对应一个 source asset：可以使用 package 级 `asset`，也可以使用仅含一项的 `[[packages.assets]]`。两项及以上会在 manifest 校验阶段失败，不会发出 HTTP 请求；多个独立 URL 应拆成多个 package。
+
 ## Package 安装
 
 每个 package 会先安装到独立 staging 目录。staging 内有两个约定目录：
@@ -249,11 +256,20 @@ required = true
 
 package 成功后，只有 `output/` 的内容会按 manifest 顺序串行合并到 staged output。后面的 package 可以覆盖前面的文件。`extract/` 里的文件不会自动进入最终输出。
 
-package `steps` 读取和修改当前 package staging，不会 fallback 到 `paths.source`。要引入静态资源，请使用 `file:` package 或 `[resources].copy`。
+package `steps` 读取和修改当前 package staging，不会 fallback 到 `paths.source`。要引入静态资源，请使用普通 `file:` package；目录资源可用 `target = "."` 合并到输出根：
 
-`asset` 是正则表达式，用来匹配 GitHub release asset、URL 文件名，或 `file:` 本地目录下的直接子文件名。匹配结果必须唯一：没有匹配或匹配到多个 asset 都会报错。TOML 里推荐用单引号写正则，避免 `\\.zip` 这种双层转义。
+```toml
+[[packages]]
+name = "Static Resources"
+group = "resources"
+required = true
+source = "file:resources/sd"
+target = "."
+```
 
-默认安装方式是复制文件本身。单文件 asset 会复制到 package `output/`，`target` 是相对 `output/` 的路径。只有显式写 `install = "extract"` 时，treepack 才会把匹配到的 zip 解压到 package `extract/<safe-asset-name>/`。如果同一个 package 内多个 zip asset 的安全目录名发生碰撞，构建会失败，不会静默合并 staging 内容。
+`asset` 是正则表达式，用来选择 source asset：GitHub release asset、URL 文件名、直接 `file:` 文件的 basename，或 `file:` 本地目录下的直接子项名称。它不用于选择 ZIP 内部 entry。匹配使用 Go `MatchString` 语义，不会自动添加 `^` 或 `$`；匹配结果必须唯一。TOML 里推荐用单引号写正则，避免 `\\.zip` 这种双层转义。
+
+默认安装方式是复制文件本身。单文件 asset 会复制到 package `output/`，`target` 是相对 `output/` 的路径。只有显式写 `install = "extract"` 时，treepack 才会把匹配到的 zip 解压到 package `extract/<safe-asset-name>/`；`extract` 与 `target` 互斥。ZIP 内多个 entry 仍由一个 `install = "extract"` asset 配合多个 package steps 安装。如果同一个 package 内多个 zip asset 的安全目录名发生碰撞，构建会失败，不会静默合并 staging 内容。
 
 本地目录 source 不写 `asset` / `assets` 时会安装整个目录，并默认保留目录名：
 
@@ -377,6 +393,8 @@ required = true
 
 所有操作只能写在 package `steps` 内，并且路径都相对当前 package staging。`extract/` 是解压输入区，`output/` 是该 package 会发布到最终 staged output 的内容。
 
+package 未声明 `required` 时默认为 `true`。step 未声明 `required` 时继承所属 package 的有效值；step 显式值会覆盖继承。有效值为 `false` 的 step 失败时只记录 warning，继续执行后续 steps，并在 package 完成后合并已经产生的 output。有效值为 `true` 的 step 失败时终止当前 package；只有该 package 本身为 required 时才阻断整个构建。
+
 `cp` 使用 literal path，支持文件和目录。复制文件到已存在目录时保留 basename；复制目录到已存在目录时会创建/合并 `to/<basename>`；`from = "dir/."` 表示复制目录内容到 `to`：
 
 ```toml
@@ -425,10 +443,12 @@ required = false
 - package `target` 必须留在 output 内。
 - `layout.dirs`、`build.build_info` 必须留在 output 内。
 - package `steps` 的读写、删除目标必须留在当前 package staging 内。
-- `resources.copy` 和 `file:` source 必须留在 `paths.source` 内。
+- `file:` source 必须留在 `paths.source` 内。
 - `paths.source`、`paths.output`、`paths.work` 不能相同，也不能互相包含。
 - `build.archive` 不能和 `paths.source`、`paths.output`、`paths.work`、本次 work run dir 或 manifest 文件重叠；archive 目标不能是既有目录。
 - zip 解压时，zip entry 不能逃出 output；symlink entry、特殊文件 entry、重复 entry 和 Windows 大小写冲突会被拒绝。
+
+上述 package target/steps、layout、verify、build_info、archive 模板及路径重叠会在任何网络请求之前统一预检；错误会带配置位置，例如 `packages[1].assets[1].target`。
 
 配置里的目录路径可以是绝对路径。manifest 相对路径按 `kit.toml` 所在目录解析，CLI 覆盖路径按当前运行目录解析。文件树内部路径不要使用绝对路径或 `..` 穿越路径。
 
@@ -442,7 +462,7 @@ required = false
 BUILD_INFO.txt
 ```
 
-`BUILD_INFO.txt` 记录 pack 信息、builder 版本、resolved asset、asset URL、SHA-256、operations、verification 和 failures。
+`BUILD_INFO.txt` 记录 pack 信息、builder 版本、resolved asset、脱敏后的 asset URL、SHA-256、operations、verification 和 failures。发布报告不包含 `Resolved Paths` 段或本机绝对路径；内存报告和 stderr 日志仍保留解析路径用于诊断。
 
 构建失败时，报告不会发布到 output。需要查看失败过程中的 staged report 时，使用 `--keep-work` 保留本次 work run dir。
 

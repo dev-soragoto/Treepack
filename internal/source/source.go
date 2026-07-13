@@ -43,32 +43,8 @@ type ResolveRequest struct {
 	HTTPClient  *http.Client
 }
 
-// ResolveAsset 解析单个资源模式并返回唯一解析结果。
-func ResolveAsset(source, pattern, root, downloadDir, githubToken, proxy string, retries int, progress io.Writer, h Hasher) (ResolvedAsset, error) {
-	resolved, err := ResolveAssetRequests(ResolveRequest{
-		Source: source, Assets: []AssetRequest{{Pattern: pattern}}, Root: root, DownloadDir: downloadDir,
-		GitHubToken: githubToken, Proxy: proxy, Retries: retries, Progress: progress, Hasher: h,
-	})
-	if err != nil {
-		return ResolvedAsset{}, err
-	}
-	return resolved[0], nil
-}
-
-// ResolveAssets 根据来源类型解析多个资源模式并下载或复制到下载目录。
-func ResolveAssets(source string, patterns []string, root, downloadDir, githubToken, proxy string, retries int, progress io.Writer, h Hasher) ([]ResolvedAsset, error) {
-	assets := make([]AssetRequest, 0, len(patterns))
-	for _, pattern := range patterns {
-		assets = append(assets, AssetRequest{Pattern: pattern})
-	}
-	return ResolveAssetRequests(ResolveRequest{
-		Source: source, Assets: assets, Root: root, DownloadDir: downloadDir, GitHubToken: githubToken,
-		Proxy: proxy, Retries: retries, Progress: progress, Hasher: h,
-	})
-}
-
-// ResolveAssetRequests 根据来源类型解析多个资源请求并校验可选 checksum。
-func ResolveAssetRequests(req ResolveRequest) ([]ResolvedAsset, error) {
+// Resolve 根据来源类型解析资源请求并校验可选 checksum。
+func Resolve(req ResolveRequest) ([]ResolvedAsset, error) {
 	if req.Retries < 1 {
 		return nil, fmt.Errorf("download retries must be at least 1")
 	}

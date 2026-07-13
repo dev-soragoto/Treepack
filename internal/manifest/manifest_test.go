@@ -81,6 +81,11 @@ source = "file:x"
 asset = "x"
 required = true
 `,
+		`[pack]
+name = "Demo"
+[resources]
+copy = "resources"
+`,
 	}
 	for _, body := range tests {
 		dir := t.TempDir()
@@ -251,5 +256,75 @@ op = "cp_regex"
 		if _, err := Load(path); err == nil {
 			t.Fatalf("expected cp_regex validation error for:\n%s", body)
 		}
+	}
+}
+
+func TestLoadValidatesURLAssetCardinalityAndExtractTarget(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "url multiple assets",
+			body: `[[packages]]
+name = "URL"
+source = "url:https://example.com/a.zip"
+[[packages.assets]]
+asset = "a"
+[[packages.assets]]
+asset = "b"`,
+			want: "packages[1].assets",
+		},
+		{
+			name: "package extract target",
+			body: `[[packages]]
+name = "Extract"
+source = "file:a.zip"
+asset = "a"
+install = "extract"
+target = "ignored"`,
+			want: "packages[1].target",
+		},
+		{
+			name: "asset extract target",
+			body: `[[packages]]
+name = "Extract"
+source = "file:."
+[[packages.assets]]
+asset = "a"
+install = "extract"
+target = "ignored"`,
+			want: "packages[1].assets[1].target",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "kit.toml")
+			body := "[pack]\nname = \"Demo\"\n" + tc.body + "\n"
+			if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %q error, got %v", tc.want, err)
+			}
+		})
+	}
+
+	path := filepath.Join(t.TempDir(), "kit.toml")
+	body := `[pack]
+name = "Demo"
+[[packages]]
+name = "URL"
+source = "url:https://example.com/a.zip"
+[[packages.assets]]
+asset = "a"
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("single URL assets entry should be valid: %v", err)
 	}
 }

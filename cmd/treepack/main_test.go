@@ -38,6 +38,113 @@ func TestHelpFlags(t *testing.T) {
 	}
 }
 
+// TestHelpTopics 验证主题帮助只能通过 help flag 访问。
+func TestHelpTopics(t *testing.T) {
+	tests := []struct {
+		args []string
+		want string
+	}{
+		{args: []string{"--help", "config"}, want: "Config"},
+		{args: []string{"-h", "packages"}, want: "Packages"},
+	}
+	for _, tc := range tests {
+		var stdout, stderr bytes.Buffer
+		code := run(tc.args, &stdout, &stderr)
+		if code != 0 {
+			t.Fatalf("%v returned %d, stderr: %s", tc.args, code, stderr.String())
+		}
+		if stderr.Len() != 0 {
+			t.Fatalf("%v stderr = %q", tc.args, stderr.String())
+		}
+		if !strings.Contains(stdout.String(), tc.want) {
+			t.Fatalf("%v stdout missing %q:\n%s", tc.args, tc.want, stdout.String())
+		}
+		if strings.Contains(stdout.String(), "Usage:") {
+			t.Fatalf("%v returned overview instead of topic:\n%s", tc.args, stdout.String())
+		}
+	}
+}
+
+func TestHelpTopicSemanticContracts(t *testing.T) {
+	tests := []struct {
+		topic string
+		want  []string
+		avoid []string
+	}{
+		{
+			topic: "config",
+			want:  []string{"layout", "[[packages.steps]]", "build.keep_work", "OR"},
+			avoid: []string{"packages, ops"},
+		},
+		{
+			topic: "packages",
+			want: []string{
+				"does not select entries inside a zip",
+				"url: accepts exactly one source asset",
+				"file basename",
+				"not implicitly",
+				"anchored.",
+				"cannot be combined with target",
+				"step without",
+				"required inherits its package value",
+				"only a required package blocks",
+			},
+		},
+		{
+			topic: "build",
+			want:  []string{"before any network request", "random temporary file", "not resolved local paths"},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.topic, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			if code := run([]string{"--help", tc.topic}, &stdout, &stderr); code != 0 {
+				t.Fatalf("help returned %d: %s", code, stderr.String())
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("%s help missing %q:\n%s", tc.topic, want, stdout.String())
+				}
+			}
+			for _, avoid := range tc.avoid {
+				if strings.Contains(stdout.String(), avoid) {
+					t.Fatalf("%s help contains stale %q:\n%s", tc.topic, avoid, stdout.String())
+				}
+			}
+		})
+	}
+}
+
+// TestUnknownHelpTopicReturnsUsageError 验证未知主题帮助返回参数错误。
+func TestUnknownHelpTopicReturnsUsageError(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"--help", "missing"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("expected code 2, got %d", code)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q", stdout.String())
+	}
+	for _, want := range []string{"unknown help topic: missing", "available help topics:", "config", "packages"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+// TestHelpCommandIsUnexpectedArgument 验证 help 不是子命令。
+func TestHelpCommandIsUnexpectedArgument(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"help", "config"}, &stdout, &stderr)
+	if code != 2 {
+		t.Fatalf("expected code 2, got %d", code)
+	}
+	if !strings.Contains(stderr.String(), "unexpected argument: help") {
+		t.Fatalf("unexpected stderr: %s", stderr.String())
+	}
+	assertHelpText(t, stderr.String())
+}
+
 // TestBuildSubcommandIsUnexpectedArgument 验证不存在的 build 子命令会作为多余参数报错。
 func TestBuildSubcommandIsUnexpectedArgument(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -148,8 +255,11 @@ source = "SRC"
 output = "OUT"
 [build]
 archive = "raw-cli.zip"
-[resources]
-copy = "resources"
+[[packages]]
+name = "Resources"
+group = "resources"
+source = "file:resources"
+target = "."
 `)
 	rewriteMainTestFile(t, filepath.Join(root, "kit.toml"), map[string]string{
 		"SRC": filepath.ToSlash(sourceDir),
