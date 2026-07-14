@@ -277,7 +277,7 @@ func TestExtractZipRejectsDuplicateEntries(t *testing.T) {
 		{name: "a.txt", body: "one"},
 		{name: "a.txt", body: "two"},
 	})
-	if err := ExtractZip(zipPath, filepath.Join(t.TempDir(), "out")); err == nil {
+	if _, err := ExtractZip(zipPath, filepath.Join(t.TempDir(), "out")); err == nil {
 		t.Fatal("expected duplicate entry to fail")
 	}
 }
@@ -305,7 +305,7 @@ func TestExtractZipRejectsSymlinkEntries(t *testing.T) {
 	if err := out.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := ExtractZip(zipPath, filepath.Join(t.TempDir(), "out")); err == nil {
+	if _, err := ExtractZip(zipPath, filepath.Join(t.TempDir(), "out")); err == nil {
 		t.Fatal("expected symlink entry to fail")
 	}
 }
@@ -329,7 +329,7 @@ func TestExtractZipRejectsSpecialEntries(t *testing.T) {
 	if err := out.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := ExtractZip(zipPath, filepath.Join(t.TempDir(), "out")); err == nil {
+	if _, err := ExtractZip(zipPath, filepath.Join(t.TempDir(), "out")); err == nil {
 		t.Fatal("expected special entry to fail")
 	}
 }
@@ -338,7 +338,7 @@ func TestExtractZipRejectsSpecialEntries(t *testing.T) {
 func TestExtractZipRejectsEscapingEntry(t *testing.T) {
 	zipPath := filepath.Join(t.TempDir(), "escape.zip")
 	writeZipEntries(t, zipPath, []zipEntry{{name: "../outside.txt", body: "bad"}})
-	if err := ExtractZip(zipPath, filepath.Join(t.TempDir(), "out")); err == nil {
+	if _, err := ExtractZip(zipPath, filepath.Join(t.TempDir(), "out")); err == nil {
 		t.Fatal("expected escaping entry to fail")
 	}
 }
@@ -372,7 +372,7 @@ func TestExtractZipPreservesExactMode(t *testing.T) {
 	}
 
 	outputDir := filepath.Join(root, "out")
-	if err := ExtractZip(zipPath, outputDir); err != nil {
+	if _, err := ExtractZip(zipPath, outputDir); err != nil {
 		t.Fatal(err)
 	}
 	info, err := os.Stat(filepath.Join(outputDir, "script"))

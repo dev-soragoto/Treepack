@@ -6,6 +6,9 @@ output. Supported source prefixes are file:, url:, and github:.
 An asset pattern selects a source asset. It does not select entries inside a zip.
 Zip entries are installed by one asset with install = "extract" followed by one
 or more [[packages.steps]] operations that copy from extract/<asset-name>/.
+Portable zip-name corrections are also applied to literal step paths below
+extract/<asset-name>/. cp_regex instead matches the corrected physical names.
+Unsafe paths, special files, and portable-name conflicts reject the whole zip.
 
 url: accepts exactly one source asset, declared with asset or one [[packages.assets]]
 entry. file: pointing directly at a regular file may omit asset; when asset is

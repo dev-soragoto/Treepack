@@ -19,6 +19,14 @@ type PackageRecord struct {
 	Message string
 }
 
+type ArchiveCorrection struct {
+	Package   string
+	Asset     string
+	Original  string
+	Extracted string
+	Reasons   []string
+}
+
 type BuildReport struct {
 	Manifest *manifest.Manifest
 	Paths    struct {
@@ -29,10 +37,11 @@ type BuildReport struct {
 		StagedOutput string
 		KeepWork     bool
 	}
-	Packages     []PackageRecord
-	Operations   []ops.OperationResult
-	Verification []verify.Result
-	Failures     []string
+	Packages           []PackageRecord
+	Operations         []ops.OperationResult
+	Verification       []verify.Result
+	ArchiveCorrections []ArchiveCorrection
+	Failures           []string
 }
 
 // New 创建关联清单的空构建报告。
@@ -132,6 +141,21 @@ func BuildInfo(r *BuildReport, version string) string {
 			kind = "required"
 		}
 		lines = append(lines, fmt.Sprintf("FAIL(%s): %s: %s", kind, result.Label, result.Message))
+	}
+	lines = append(lines, "", "Archive Path Corrections", "------------------------")
+	if len(r.ArchiveCorrections) == 0 {
+		lines = append(lines, "None")
+	}
+	for i, correction := range r.ArchiveCorrections {
+		if i > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines,
+			"Package: "+correction.Package,
+			"Asset: "+correction.Asset,
+			correction.Original+" -> "+correction.Extracted,
+			"Reason: "+strings.Join(correction.Reasons, "; "),
+		)
 	}
 	lines = append(lines, "", "Verification", "------------")
 	if len(r.Verification) == 0 {

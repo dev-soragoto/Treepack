@@ -34,5 +34,31 @@ func safeName(value string) string {
 			builder.WriteByte('_')
 		}
 	}
-	return builder.String()
+	result := builder.String()
+	if result == "" || result == "." || result == ".." {
+		result = "_"
+	}
+	deviceName := isWindowsDeviceName(strings.TrimRight(result, "."))
+	bytes := []byte(result)
+	for i := len(bytes) - 1; i >= 0 && bytes[i] == '.'; i-- {
+		bytes[i] = '_'
+	}
+	result = string(bytes)
+	if deviceName {
+		result = "_" + result
+	}
+	return result
+}
+
+func isWindowsDeviceName(value string) bool {
+	base := value
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	base = strings.ToUpper(base)
+	switch base {
+	case "CON", "PRN", "AUX", "NUL":
+		return true
+	}
+	return len(base) == 4 && (strings.HasPrefix(base, "COM") || strings.HasPrefix(base, "LPT")) && base[3] >= '1' && base[3] <= '9'
 }

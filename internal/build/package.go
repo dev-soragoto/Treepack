@@ -67,11 +67,12 @@ func installPackage(req installRequest) (string, error) {
 	for i, assetConfig := range assetConfigs {
 		resolved := resolvedAssets[i]
 		req.Record.Assets = append(req.Record.Assets, resolved)
-		if err := installAsset(resolved, assetConfig, packageDir, packageOutputDir, extractNames, fs, req.Logger); err != nil {
+		if err := installAsset(pkg.Name, resolved, assetConfig, packageDir, packageOutputDir, extractNames, fs, req.Report, req.Logger); err != nil {
 			return "", err
 		}
 	}
-	for _, step := range pkg.Steps {
+	for _, configuredStep := range pkg.Steps {
+		step := correctExtractStepPaths(configuredStep)
 		result := ops.Run(step, packageDir, fs, pkg.IsRequired())
 		req.Report.AddOperation(result)
 		logOperation(result, req.Logger)
@@ -93,7 +94,7 @@ func packageAssets(pkg manifest.PackageConfig) []manifest.AssetConfig {
 }
 
 // installAsset 根据资源安装策略复制资源文件或解压 zip 资源。
-func installAsset(resolved source.ResolvedAsset, assetConfig manifest.AssetConfig, packageDir, outputDir string, extractNames map[string]string, fs fsAdapter, logger *logging.Logger) error {
+func installAsset(packageName string, resolved source.ResolvedAsset, assetConfig manifest.AssetConfig, packageDir, outputDir string, extractNames map[string]string, fs fsAdapter, rep *report.BuildReport, logger *logging.Logger) error {
 	if assetConfig.Install == "extract" {
 		if resolved.Kind == "dir" {
 			return fmt.Errorf("extract only supports zip assets: %s", resolved.AssetName)
@@ -113,7 +114,20 @@ func installAsset(resolved source.ResolvedAsset, assetConfig manifest.AssetConfi
 		if logger != nil {
 			logger.Info("extracting asset: %s -> %s", resolved.Path, extractDir)
 		}
-		return archive.ExtractZip(resolved.Path, extractDir)
+		result, err := archive.ExtractZip(resolved.Path, extractDir)
+		if err != nil {
+			return err
+		}
+		for _, correction := range result.Corrections {
+			rep.ArchiveCorrections = append(rep.ArchiveCorrections, report.ArchiveCorrection{
+				Package: packageName, Asset: resolved.AssetName, Original: correction.Original,
+				Extracted: correction.Extracted, Reasons: correction.Reasons,
+			})
+			if logger != nil {
+				logger.Warn("archive entry renamed for portability:\n  %s: %s -> %s", resolved.AssetName, correction.Original, correction.Extracted)
+			}
+		}
+		return nil
 	}
 	target := assetConfig.Target
 	if target == "" {
@@ -144,4 +158,27 @@ func installAsset(resolved source.ResolvedAsset, assetConfig manifest.AssetConfi
 		logger.Key("installed asset: %s -> %s", resolved.Path, dest)
 	}
 	return nil
+}
+
+func correctExtractStepPaths(step ops.OperationConfig) ops.OperationConfig {
+	step.From = correctExtractLiteralPath(step.From)
+	step.To = correctExtractLiteralPath(step.To)
+	step.Path = correctExtractLiteralPath(step.Path)
+	return step
+}
+
+func correctExtractLiteralPath(value string) string {
+	if value == "" {
+		return value
+	}
+	parts := strings.Split(filepath.ToSlash(value), "/")
+	if len(parts) < 2 || parts[0] != "extract" {
+		return value
+	}
+	parts[1] = safeName(parts[1])
+	if len(parts) > 2 {
+		corrected, _ := archive.CorrectZipPath(strings.Join(parts[2:], "/"))
+		parts = append(parts[:2], strings.Split(filepath.ToSlash(corrected), "/")...)
+	}
+	return strings.Join(parts, "/")
 }

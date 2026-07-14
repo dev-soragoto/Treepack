@@ -40,3 +40,5 @@ examples/.treepack/
 
 # Keep checked-in fixture archives for offline smoke tests.
 !examples/smoke/fixtures/archive.zip
+# Local Go caches used by restricted development environments.
+.tmp/

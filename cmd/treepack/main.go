@@ -38,6 +38,7 @@ const (
 	workDirOption
 	keepWorkOption
 	rawArchiveOption
+	explainOption
 	proxyOption
 	downloadRetriesOption
 	githubTokenOption
@@ -62,6 +63,7 @@ type cliOptions struct {
 	workDir         string
 	keepWork        bool
 	rawArchive      bool
+	explain         bool
 	proxy           string
 	githubToken     string
 	downloadRetries int
@@ -76,6 +78,7 @@ var optionSpecs = []optionSpec{
 	{target: workDirOption, kind: stringOption, long: "work-dir", metavar: "DIR", description: "Override paths.work from the manifest."},
 	{target: keepWorkOption, kind: boolOption, long: "keep-work", description: "Keep the work run directory after the build."},
 	{target: rawArchiveOption, kind: boolOption, long: "raw-archive", description: "Include common OS desktop metadata in generated zip archives."},
+	{target: explainOption, kind: boolOption, long: "explain", description: "Print the static build operation plan without reading sources or writing output."},
 	{target: proxyOption, kind: stringOption, long: "proxy", short: "p", metavar: "URL", description: "Proxy for downloads. Supports http, https, socks5, and socks5h."},
 	{target: downloadRetriesOption, kind: intOption, long: "download-retries", metavar: "N", defaultText: "3", description: "Total download attempts, including the first request."},
 	{target: githubTokenOption, kind: stringOption, long: "github-token", metavar: "TOKEN", description: "GitHub token for release API requests and GitHub asset downloads."},
@@ -123,6 +126,21 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "treepack: invalid download retries: must be at least 1\n")
 		usage(stderr)
 		return 2
+	}
+	if opts.explain {
+		body, err := build.Explain(build.Options{
+			ConfigPath: opts.config, Source: opts.source, Output: opts.output,
+			WorkDir: opts.workDir, KeepWork: opts.keepWork, RawArchive: opts.rawArchive,
+		})
+		if err != nil {
+			fmt.Fprintf(stderr, "treepack: %s\n", err)
+			if errors.Is(err, manifest.ErrManifestNotFound) {
+				usage(stderr)
+			}
+			return 1
+		}
+		fmt.Fprint(stdout, body)
+		return 0
 	}
 	token := opts.githubToken
 	if token == "" {
@@ -219,6 +237,8 @@ func boolOptionValue(opts *cliOptions, target optionTarget) *bool {
 		return &opts.keepWork
 	case rawArchiveOption:
 		return &opts.rawArchive
+	case explainOption:
+		return &opts.explain
 	case versionOption:
 		return &opts.showVersion
 	case helpOption:

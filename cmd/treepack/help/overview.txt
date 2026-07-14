@@ -28,9 +28,15 @@ Output:
   paths.output is a generated result directory. During publish, Treepack removes
   the existing output directory before writing the new result. It does not keep
   the previous output, run transactionally, or roll back after failures.
-  A zip archive is created only when [build].archive is set. Generated archives
-  skip common macOS, Windows, and Linux desktop metadata by default; this does
-  not change paths.output. Use --raw-archive to archive paths.output as-is.
+  A zip archive is created only when [build].archive is set. Treepack first
+  creates a temporary zip from the staged output, publishes paths.output only
+  after that succeeds, then replaces the final archive. Generated archives skip
+  common desktop metadata by default; this does not change the published output.
+  Use --raw-archive to archive the staged output as-is.
+  --explain prints each static operation in execution order. It does not inspect
+  source files or zip contents, access the network, or create work/output paths.
+  Literal paths below extract/<asset>/ use portable zip-name correction; cp_regex
+  patterns match the corrected physical names produced by extraction.
 
 Exit codes:
   0  success, help, or version
