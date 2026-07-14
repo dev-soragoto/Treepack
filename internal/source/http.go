@@ -161,7 +161,7 @@ func retryDelay(resp *http.Response) (time.Duration, error) {
 
 func limitRetryAfter(delay time.Duration) (time.Duration, error) {
 	if delay > maxRetryAfter {
-		return 0, fmt.Errorf("Retry-After exceeds maximum %s", maxRetryAfter)
+		return 0, fmt.Errorf("server requested Retry-After of %s, exceeding Treepack limit of %s", delay, maxRetryAfter)
 	}
 	return delay, nil
 }
@@ -225,10 +225,6 @@ func ensureHTTPClient(client *http.Client, proxy string) (*http.Client, error) {
 	if client != nil {
 		return client, nil
 	}
-	return NewHTTPClient(proxy)
-}
-
-func newHTTPClient(proxy string) (*http.Client, error) {
 	return NewHTTPClient(proxy)
 }
 

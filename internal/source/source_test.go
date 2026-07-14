@@ -440,7 +440,7 @@ func TestResolveFileRejectsTraversal(t *testing.T) {
 
 // TestExplicitProxyConfiguresTransport 验证显式代理会写入 HTTP transport。
 func TestExplicitProxyConfiguresTransport(t *testing.T) {
-	client, err := newHTTPClient("socks5://127.0.0.1:7890")
+	client, err := NewHTTPClient("socks5://127.0.0.1:7890")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -463,7 +463,7 @@ func TestExplicitProxyConfiguresTransport(t *testing.T) {
 
 // TestDefaultHTTPClientUsesDefaultTransport 验证未指定代理时保留默认环境代理行为。
 func TestDefaultHTTPClientUsesDefaultTransport(t *testing.T) {
-	client, err := newHTTPClient("")
+	client, err := NewHTTPClient("")
 	if err != nil {
 		t.Fatal(err)
 	}

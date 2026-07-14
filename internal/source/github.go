@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"regexp"
 	"strings"
 
@@ -20,12 +21,15 @@ type githubRelease struct {
 }
 
 type githubAsset struct {
+	ID                 int64  `json:"id"`
 	Name               string `json:"name"`
+	Size               int64  `json:"size"`
+	Digest             string `json:"digest"`
 	BrowserDownloadURL string `json:"browser_download_url"`
 }
 
 // resolveGitHubAssets 解析 GitHub release 资源并下载所有匹配的唯一资产。
-func resolveGitHubAssets(source string, requests []AssetRequest, downloadDir, githubToken, proxy string, retries int, progress io.Writer, h Hasher, client *http.Client) ([]ResolvedAsset, error) {
+func resolveGitHubAssets(source string, requests []AssetRequest, downloadDir, githubToken, proxy string, retries int, progress io.Writer, h Hasher, client *http.Client, cache cacheConfig) ([]ResolvedAsset, error) {
 	spec := strings.TrimPrefix(source, "github:")
 	repoPart, tag, hasTag := strings.Cut(spec, "@")
 	parts := strings.Split(repoPart, "/")
@@ -98,6 +102,20 @@ func resolveGitHubAssets(source string, requests []AssetRequest, downloadDir, gi
 		if err != nil {
 			return nil, err
 		}
+		key := cacheKey("github", parts[0]+"/"+parts[1], releaseTag, fmt.Sprint(asset.ID))
+		expected := request.SHA256
+		if expected == "" {
+			expected = normalizedDigestSHA(asset.Digest)
+		}
+		assetSize := asset.Size
+		if assetSize == 0 {
+			assetSize = -1
+		}
+		if sum, ok := cacheRead(cache, key, target, asset.Name, assetSize, asset.Digest, expected, h); ok {
+			resolvedAsset.Path, resolvedAsset.SHA256 = target, sum
+			resolved = append(resolved, resolvedAsset)
+			continue
+		}
 		if err := download(asset.BrowserDownloadURL, target, githubHeaders(githubToken, false), proxy, retries, progress, client); err != nil {
 			return nil, err
 		}
@@ -107,6 +125,15 @@ func resolveGitHubAssets(source string, requests []AssetRequest, downloadDir, gi
 		}
 		resolvedAsset.Path = target
 		resolvedAsset.SHA256 = sum
+		if digestSHA := normalizedDigestSHA(asset.Digest); digestSHA != "" && !strings.EqualFold(digestSHA, sum) {
+			return nil, fmt.Errorf("GitHub digest mismatch for %s: got %s, want %s", asset.Name, sum, digestSHA)
+		}
+		if info, statErr := os.Stat(target); statErr == nil && asset.Size > 0 && info.Size() != asset.Size {
+			return nil, fmt.Errorf("GitHub asset size mismatch for %s: got %d, want %d", asset.Name, info.Size(), asset.Size)
+		}
+		if info, statErr := os.Stat(target); statErr == nil && (request.SHA256 == "" || strings.EqualFold(request.SHA256, sum)) {
+			cacheWrite(cache, key, target, cacheMeta(asset.Name, info.Size(), sum, asset.Digest), h)
+		}
 		resolved = append(resolved, resolvedAsset)
 	}
 	return resolved, nil

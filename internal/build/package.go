@@ -19,6 +19,7 @@ import (
 )
 
 type installRequest struct {
+	Context     *BuildContext
 	Package     manifest.PackageConfig
 	SourceDir   string
 	DownloadDir string
@@ -49,16 +50,19 @@ func installPackage(req installRequest) (string, error) {
 		assetRequests = append(assetRequests, source.AssetRequest{Pattern: assetConfig.Asset, SHA256: assetConfig.SHA256})
 	}
 	resolvedAssets, err := source.Resolve(source.ResolveRequest{
-		Source:      pkg.Source,
-		Assets:      assetRequests,
-		Root:        req.SourceDir,
-		DownloadDir: req.DownloadDir,
-		GitHubToken: req.Token,
-		Proxy:       req.Proxy,
-		Retries:     req.Retries,
-		Progress:    req.Progress,
-		Hasher:      fs,
-		HTTPClient:  req.HTTPClient,
+		Source:       pkg.Source,
+		Assets:       assetRequests,
+		Root:         req.SourceDir,
+		DownloadDir:  req.DownloadDir,
+		GitHubToken:  req.Token,
+		Proxy:        req.Proxy,
+		Retries:      req.Retries,
+		Progress:     req.Progress,
+		Hasher:       fs,
+		HTTPClient:   req.HTTPClient,
+		CacheDir:     req.Context.CacheDir,
+		DisableCache: req.Context.Options.DisableCache,
+		Logger:       req.Logger,
 	})
 	if err != nil {
 		return "", err

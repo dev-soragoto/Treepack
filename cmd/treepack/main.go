@@ -21,34 +21,8 @@ var version = "dev"
 //go:embed help/*.txt
 var helpFiles embed.FS
 
-type optionKind int
-
-const (
-	stringOption optionKind = iota
-	intOption
-	boolOption
-)
-
-type optionTarget int
-
-const (
-	configOption optionTarget = iota
-	sourceOption
-	outputOption
-	workDirOption
-	keepWorkOption
-	rawArchiveOption
-	explainOption
-	proxyOption
-	downloadRetriesOption
-	githubTokenOption
-	versionOption
-	helpOption
-)
-
 type optionSpec struct {
-	target      optionTarget
-	kind        optionKind
+	bind        func(*cliOptions) any
 	long        string
 	short       string
 	metavar     string
@@ -62,6 +36,7 @@ type cliOptions struct {
 	output          string
 	workDir         string
 	keepWork        bool
+	disableCache    bool
 	rawArchive      bool
 	explain         bool
 	proxy           string
@@ -72,18 +47,19 @@ type cliOptions struct {
 }
 
 var optionSpecs = []optionSpec{
-	{target: configOption, kind: stringOption, long: "config", short: "c", metavar: "kit.toml", defaultText: "kit.toml", description: "Manifest path."},
-	{target: sourceOption, kind: stringOption, long: "source", short: "s", metavar: "DIR", description: "Override paths.source from the manifest."},
-	{target: outputOption, kind: stringOption, long: "output", short: "o", metavar: "DIR", description: "Override paths.output from the manifest."},
-	{target: workDirOption, kind: stringOption, long: "work-dir", metavar: "DIR", description: "Override paths.work from the manifest."},
-	{target: keepWorkOption, kind: boolOption, long: "keep-work", description: "Keep the work run directory after the build."},
-	{target: rawArchiveOption, kind: boolOption, long: "raw-archive", description: "Include common OS desktop metadata in generated zip archives."},
-	{target: explainOption, kind: boolOption, long: "explain", description: "Print the static build operation plan without reading sources or writing output."},
-	{target: proxyOption, kind: stringOption, long: "proxy", short: "p", metavar: "URL", description: "Proxy for downloads. Supports http, https, socks5, and socks5h."},
-	{target: downloadRetriesOption, kind: intOption, long: "download-retries", metavar: "N", defaultText: "3", description: "Total download attempts, including the first request."},
-	{target: githubTokenOption, kind: stringOption, long: "github-token", metavar: "TOKEN", description: "GitHub token for release API requests and GitHub asset downloads."},
-	{target: versionOption, kind: boolOption, long: "version", short: "v", description: "Print the treepack version and exit."},
-	{target: helpOption, kind: boolOption, long: "help", short: "h", description: "Print overview help or topic help and exit."},
+	{bind: func(o *cliOptions) any { return &o.config }, long: "config", short: "c", metavar: "kit.toml", defaultText: "kit.toml", description: "Manifest path."},
+	{bind: func(o *cliOptions) any { return &o.source }, long: "source", short: "s", metavar: "DIR", description: "Override paths.source from the manifest."},
+	{bind: func(o *cliOptions) any { return &o.output }, long: "output", short: "o", metavar: "DIR", description: "Override paths.output from the manifest."},
+	{bind: func(o *cliOptions) any { return &o.workDir }, long: "work-dir", metavar: "DIR", description: "Override paths.work from the manifest."},
+	{bind: func(o *cliOptions) any { return &o.keepWork }, long: "keep-work", description: "Keep the work run directory after the build."},
+	{bind: func(o *cliOptions) any { return &o.disableCache }, long: "disable-cache", description: "Disable persistent download cache reads and writes."},
+	{bind: func(o *cliOptions) any { return &o.rawArchive }, long: "raw-archive", description: "Include common OS desktop metadata in generated zip archives."},
+	{bind: func(o *cliOptions) any { return &o.explain }, long: "explain", description: "Print the static build operation plan without reading sources or writing output."},
+	{bind: func(o *cliOptions) any { return &o.proxy }, long: "proxy", short: "p", metavar: "URL", description: "Proxy for downloads. Supports http, https, socks5, and socks5h."},
+	{bind: func(o *cliOptions) any { return &o.downloadRetries }, long: "download-retries", metavar: "N", defaultText: strconv.Itoa(build.DefaultRetries), description: "Total download attempts, including the first request."},
+	{bind: func(o *cliOptions) any { return &o.githubToken }, long: "github-token", metavar: "TOKEN", description: "GitHub token for release API requests and GitHub asset downloads."},
+	{bind: func(o *cliOptions) any { return &o.showVersion }, long: "version", short: "v", description: "Print the treepack version and exit."},
+	{bind: func(o *cliOptions) any { return &o.showHelp }, long: "help", short: "h", description: "Print overview help or topic help and exit."},
 }
 
 var helpTopics = []string{"config", "packages", "build", "paths", "verify", "examples"}
@@ -150,18 +126,19 @@ func run(args []string, stdout, stderr io.Writer) int {
 		token = os.Getenv("GH_TOKEN")
 	}
 	rep, err := build.Build(build.Options{
-		ConfigPath:  opts.config,
-		Source:      opts.source,
-		Output:      opts.output,
-		WorkDir:     opts.workDir,
-		KeepWork:    opts.keepWork,
-		RawArchive:  opts.rawArchive,
-		Retries:     opts.downloadRetries,
-		GitHubToken: token,
-		Proxy:       opts.proxy,
-		Version:     version,
-		Logger:      logging.New(stderr),
-		Progress:    stderr,
+		ConfigPath:   opts.config,
+		Source:       opts.source,
+		Output:       opts.output,
+		WorkDir:      opts.workDir,
+		KeepWork:     opts.keepWork,
+		DisableCache: opts.disableCache,
+		RawArchive:   opts.rawArchive,
+		Retries:      opts.downloadRetries,
+		GitHubToken:  token,
+		Proxy:        opts.proxy,
+		Version:      version,
+		Logger:       logging.New(stderr),
+		Progress:     stderr,
 	})
 	if err != nil {
 		fmt.Fprintf(stderr, "treepack: %s\n", err)
@@ -177,74 +154,26 @@ func run(args []string, stdout, stderr io.Writer) int {
 // registerOptions binds every command-line option from the shared option spec.
 func registerOptions(fs *flag.FlagSet, opts *cliOptions) {
 	for _, spec := range optionSpecs {
-		switch spec.kind {
-		case stringOption:
-			ptr := stringOptionValue(opts, spec.target)
+		switch ptr := spec.bind(opts).(type) {
+		case *string:
 			*ptr = spec.defaultText
 			fs.StringVar(ptr, spec.long, spec.defaultText, spec.description)
 			if spec.short != "" {
 				fs.StringVar(ptr, spec.short, spec.defaultText, spec.description)
 			}
-		case intOption:
+		case *int:
 			value, err := strconv.Atoi(spec.defaultText)
 			if err != nil {
 				panic(fmt.Sprintf("invalid default for --%s: %s", spec.long, spec.defaultText))
 			}
-			ptr := intOptionValue(opts, spec.target)
 			*ptr = value
 			fs.IntVar(ptr, spec.long, value, spec.description)
-		case boolOption:
-			ptr := boolOptionValue(opts, spec.target)
+		case *bool:
 			fs.BoolVar(ptr, spec.long, false, spec.description)
 			if spec.short != "" {
 				fs.BoolVar(ptr, spec.short, false, spec.description)
 			}
 		}
-	}
-}
-
-func stringOptionValue(opts *cliOptions, target optionTarget) *string {
-	switch target {
-	case configOption:
-		return &opts.config
-	case sourceOption:
-		return &opts.source
-	case outputOption:
-		return &opts.output
-	case workDirOption:
-		return &opts.workDir
-	case proxyOption:
-		return &opts.proxy
-	case githubTokenOption:
-		return &opts.githubToken
-	default:
-		panic("invalid string option target")
-	}
-}
-
-func intOptionValue(opts *cliOptions, target optionTarget) *int {
-	switch target {
-	case downloadRetriesOption:
-		return &opts.downloadRetries
-	default:
-		panic("invalid int option target")
-	}
-}
-
-func boolOptionValue(opts *cliOptions, target optionTarget) *bool {
-	switch target {
-	case keepWorkOption:
-		return &opts.keepWork
-	case rawArchiveOption:
-		return &opts.rawArchive
-	case explainOption:
-		return &opts.explain
-	case versionOption:
-		return &opts.showVersion
-	case helpOption:
-		return &opts.showHelp
-	default:
-		panic("invalid bool option target")
 	}
 }
 
@@ -322,7 +251,7 @@ func usageLine() string {
 		if spec.metavar != "" {
 			name += " " + spec.metavar
 		}
-		if spec.target == helpOption {
+		if spec.long == "help" {
 			name += " [TOPIC]"
 		}
 		parts = append(parts, "["+name+"]")

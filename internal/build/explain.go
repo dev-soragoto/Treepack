@@ -143,15 +143,16 @@ func preflightExplain(m *manifest.Manifest, paths ResolvedPaths) error {
 	if paths.WorkBase != "" && (staticOverlap(paths.SourceRoot, paths.WorkBase) || staticOverlap(paths.OutputRoot, paths.WorkBase)) {
 		return fmt.Errorf("paths.work cannot overlap paths.source or paths.output")
 	}
-	for i, pkg := range m.Packages {
+	for _, pkg := range m.Packages {
+		pkgLabel := fmt.Sprintf("package(name: %q)", pkg.Name)
 		if len(pkg.Assets) == 0 {
 			if err := validateStaticRelative(pkg.Target, true); err != nil {
-				return fmt.Errorf("invalid packages[%d].target: %w", i+1, err)
+				return fmt.Errorf("invalid %s.target: %w", pkgLabel, err)
 			}
 		} else {
 			for j, asset := range pkg.Assets {
 				if err := validateStaticRelative(asset.Target, true); err != nil {
-					return fmt.Errorf("invalid packages[%d].assets[%d].target: %w", i+1, j+1, err)
+					return fmt.Errorf("invalid %s.assets[%d].target: %w", pkgLabel, j+1, err)
 				}
 			}
 		}
@@ -160,16 +161,22 @@ func preflightExplain(m *manifest.Manifest, paths ResolvedPaths) error {
 				field, value := item.field, item.value
 				if value != "" {
 					if err := validateStaticRelative(value, true); err != nil {
-						return fmt.Errorf("invalid packages[%d].steps[%d].%s: %w", i+1, j+1, field, err)
+						return fmt.Errorf("invalid %s.steps[%d].%s: %w", pkgLabel, j+1, field, err)
 					}
 				}
 			}
 		}
 	}
-	for _, group := range [][]string{m.Layout.Dirs, m.Verify.Files, m.Verify.Dirs, m.Verify.Absent} {
-		for _, value := range group {
+	for _, group := range []struct {
+		label string
+		items []string
+	}{
+		{"layout.dirs", m.Layout.Dirs}, {"verify.files", m.Verify.Files},
+		{"verify.dirs", m.Verify.Dirs}, {"verify.absent", m.Verify.Absent},
+	} {
+		for i, value := range group.items {
 			if err := validateStaticRelative(value, true); err != nil {
-				return err
+				return fmt.Errorf("invalid %s[%d]: %w", group.label, i+1, err)
 			}
 		}
 	}

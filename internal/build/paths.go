@@ -20,47 +20,14 @@ type ResolvedPaths struct {
 
 // resolveBuildPaths 解析构建涉及的源目录、输出目录、工作目录和保留策略。
 func resolveBuildPaths(m *manifest.Manifest, options Options) (ResolvedPaths, error) {
-	manifestDir := filepath.Dir(m.Path)
-	sourceValue := m.Paths.Source
-	sourceBase := manifestDir
-	if options.Source != "" {
-		sourceValue = options.Source
-		sourceBase = "."
-	}
-	outputValue := m.Paths.Output
-	outputBase := manifestDir
-	if options.Output != "" {
-		outputValue = options.Output
-		outputBase = "."
-	}
-	workValue := m.Paths.Work
-	workBasePath := manifestDir
-	if options.WorkDir != "" {
-		workValue = options.WorkDir
-		workBasePath = "."
-	}
-	keepWork := m.Build.KeepWork || options.KeepWork
-	if sourceValue == "" {
-		return ResolvedPaths{}, fmt.Errorf("paths.source is required")
-	}
-	if outputValue == "" {
-		return ResolvedPaths{}, fmt.Errorf("paths.output is required")
-	}
-	sourceDir, err := resolveConfiguredPath(sourceBase, sourceValue)
+	paths, err := resolveExplainPaths(m, options)
 	if err != nil {
-		return ResolvedPaths{}, fmt.Errorf("invalid paths.source: %w", err)
+		return ResolvedPaths{}, err
 	}
-	outputDir, err := resolveConfiguredPath(outputBase, outputValue)
-	if err != nil {
-		return ResolvedPaths{}, fmt.Errorf("invalid paths.output: %w", err)
+	if err := preflightExplain(m, paths); err != nil {
+		return ResolvedPaths{}, err
 	}
-	workDir := ""
-	if workValue != "" {
-		workDir, err = resolveConfiguredPath(workBasePath, workValue)
-		if err != nil {
-			return ResolvedPaths{}, fmt.Errorf("invalid paths.work: %w", err)
-		}
-	}
+	sourceDir, outputDir, workDir := paths.SourceRoot, paths.OutputRoot, paths.WorkBase
 	_, kind, err := fsutil.ValidateEntry(sourceDir)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -91,7 +58,7 @@ func resolveBuildPaths(m *manifest.Manifest, options Options) (ResolvedPaths, er
 			return ResolvedPaths{}, err
 		}
 	}
-	return ResolvedPaths{SourceRoot: sourceDir, OutputRoot: outputDir, WorkBase: workDir, KeepWork: keepWork}, nil
+	return paths, nil
 }
 
 // resolveConfiguredPath 将清单路径按指定基准目录解析为绝对路径。

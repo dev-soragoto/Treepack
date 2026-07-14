@@ -1,5 +1,9 @@
 Paths
 
+When a stable work root is configured, cache/ persists downloads while run-*/
+contains per-build staging. --keep-work only preserves the current run directory;
+--disable-cache disables cache reads and writes.
+
 paths.source must exist and must be a directory. paths.output is a generated
 result directory and may be removed during publish.
 

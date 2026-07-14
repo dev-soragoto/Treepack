@@ -50,7 +50,7 @@ goreleaser release --snapshot --clean
 ## 命令行
 
 ```powershell
-treepack [-c kit.toml] [-s DIR] [-o DIR] [--work-dir DIR] [--keep-work] [--raw-archive] [--explain] [-p PROXY] [--download-retries N] [--github-token TOKEN] [-v] [-h]
+treepack [-c kit.toml] [-s DIR] [-o DIR] [--work-dir DIR] [--keep-work] [--disable-cache] [--raw-archive] [--explain] [-p PROXY] [--download-retries N] [--github-token TOKEN] [-v] [-h]
 ```
 
 参数：
@@ -60,6 +60,7 @@ treepack [-c kit.toml] [-s DIR] [-o DIR] [--work-dir DIR] [--keep-work] [--raw-a
 - `-o`, `--output`：覆盖 `paths.output`。
 - `--work-dir`：覆盖 `paths.work`。
 - `--keep-work`：保留本次构建 work run dir。
+- `--disable-cache`：禁止读取和写入持久下载缓存。
 - `--raw-archive`：生成 zip 时按本次 staged output 的内容原样归档，保留默认会过滤的系统元数据。
 - `--explain`：按真实执行顺序输出静态操作计划，不读取 source/ZIP、不访问网络，也不创建 work/output。
 - `-p`, `--proxy`：下载代理，例如 `http://127.0.0.1:7890` 或 `socks5://127.0.0.1:7890`。
@@ -212,6 +213,8 @@ absent = [
 
 `build.keep_work` 与 CLI `--keep-work` 使用 OR 关系：任一为 `true` 都会保留本次 work run dir。
 
+配置 `paths.work` 或 `--work-dir` 后，Treepack 在 `<work>/cache/` 保存持久下载缓存，并在 `<work>/run-*/` 创建每次构建的临时目录。构建清理只删除本次 `run-*`；`--keep-work` 不影响缓存。没有稳定 work root 时，持久缓存禁用。GitHub 每次仍查询 release 和 asset metadata，仅复用经名称、大小、digest/校验和验证的资产正文；普通 URL 只有配置 SHA-256 时才缓存，命中后不访问网络。`--disable-cache` 同时禁止缓存读写。
+
 ## Source 语法
 
 ```text
@@ -231,7 +234,7 @@ file:resources/local_dir
 
 GitHub release asset 当前仅保证公开 release asset 下载。`--github-token` / `GITHUB_TOKEN` 会用于 release API 请求；私有仓库 release asset 的专用下载流程暂不作为兼容承诺。
 
-`file:` 路径从 `paths.source` 解析，并且必须留在 `paths.source` 内。`file:` 直接指向普通文件时可以不写 `asset`；写了 `asset` 时，正则必须以 Go `MatchString` 语义匹配该文件的 basename。`file:` 指向目录且不写 `asset` / `assets` 时，整个目录会作为一个目录资产安装。`file:` 指向目录且写了 `asset` / `assets` 时，该目录会作为资产池，正则只匹配直接子项名称，匹配结果可以是文件或目录，但必须唯一。
+`file:` 路径从 `paths.source` 解析，并且必须留在 `paths.source` 内；绝对 `file:` 路径也必须位于该目录内。`file:` 直接指向普通文件时可以不写 `asset`；写了 `asset` 时，正则必须以 Go `MatchString` 语义匹配该文件的 basename。`file:` 指向目录且不写 `asset` / `assets` 时，整个目录会作为一个目录资产安装。`file:` 指向目录且写了 `asset` / `assets` 时，该目录会作为资产池，正则只匹配直接子项名称，匹配结果可以是文件或目录，但必须唯一。
 
 直接 URL 示例：
 
@@ -290,6 +293,8 @@ target = "program"
 ```
 
 `target = "."` 会把目录内容合并到当前 package 的 `output/` 根，而不是创建外层目录：
+
+对单文件资产，`target = "."` 表示放到 `output/` 根并保留文件 basename。
 
 ```toml
 [[packages]]

@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"treepack/internal/logging"
 )
 
 type ResolvedAsset struct {
@@ -31,16 +33,19 @@ type AssetRequest struct {
 }
 
 type ResolveRequest struct {
-	Source      string
-	Assets      []AssetRequest
-	Root        string
-	DownloadDir string
-	GitHubToken string
-	Proxy       string
-	Retries     int
-	Progress    io.Writer
-	Hasher      Hasher
-	HTTPClient  *http.Client
+	Source       string
+	Assets       []AssetRequest
+	Root         string
+	DownloadDir  string
+	GitHubToken  string
+	Proxy        string
+	Retries      int
+	Progress     io.Writer
+	Hasher       Hasher
+	HTTPClient   *http.Client
+	CacheDir     string
+	DisableCache bool
+	Logger       *logging.Logger
 }
 
 // Resolve 根据来源类型解析资源请求并校验可选 checksum。
@@ -64,14 +69,14 @@ func Resolve(req ResolveRequest) ([]ResolvedAsset, error) {
 			return nil, clientErr
 		}
 		resolved, err = resolveEach(req.Assets, func(asset AssetRequest) (ResolvedAsset, error) {
-			return resolveURL(req.Source, asset.Pattern, req.DownloadDir, req.GitHubToken, req.Proxy, req.Retries, req.Progress, req.Hasher, client)
+			return resolveURL(req.Source, asset, req.DownloadDir, req.GitHubToken, req.Proxy, req.Retries, req.Progress, req.Hasher, client, cacheConfig{Dir: req.CacheDir, Disabled: req.DisableCache, Logger: req.Logger})
 		})
 	case strings.HasPrefix(req.Source, "github:"):
 		client, clientErr := ensureHTTPClient(req.HTTPClient, req.Proxy)
 		if clientErr != nil {
 			return nil, clientErr
 		}
-		resolved, err = resolveGitHubAssets(req.Source, req.Assets, req.DownloadDir, req.GitHubToken, req.Proxy, req.Retries, req.Progress, req.Hasher, client)
+		resolved, err = resolveGitHubAssets(req.Source, req.Assets, req.DownloadDir, req.GitHubToken, req.Proxy, req.Retries, req.Progress, req.Hasher, client, cacheConfig{Dir: req.CacheDir, Disabled: req.DisableCache, Logger: req.Logger})
 	default:
 		return nil, fmt.Errorf("unsupported source: %s", req.Source)
 	}

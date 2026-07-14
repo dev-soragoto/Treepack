@@ -274,7 +274,7 @@ source = "url:https://example.com/a.zip"
 asset = "a"
 [[packages.assets]]
 asset = "b"`,
-			want: "packages[1].assets",
+			want: `package(name: "URL").assets`,
 		},
 		{
 			name: "package extract target",
@@ -284,7 +284,7 @@ source = "file:a.zip"
 asset = "a"
 install = "extract"
 target = "ignored"`,
-			want: "packages[1].target",
+			want: `package(name: "Extract").target`,
 		},
 		{
 			name: "asset extract target",
@@ -295,7 +295,7 @@ source = "file:."
 asset = "a"
 install = "extract"
 target = "ignored"`,
-			want: "packages[1].assets[1].target",
+			want: `package(name: "Extract").assets[1].target`,
 		},
 	}
 	for _, tc := range tests {

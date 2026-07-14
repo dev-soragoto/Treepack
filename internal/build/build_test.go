@@ -351,8 +351,8 @@ func TestBuildPreflightRejectsInvalidPathsBeforeHTTP(t *testing.T) {
 		extra string
 		want  string
 	}{
-		{"target", `target = "../escape"`, "packages[1].target"},
-		{"step", "[[packages.steps]]\nop = \"touch\"\npath = \"../escape\"", "packages[1].steps[1].path"},
+		{"target", `target = "../escape"`, `package(name: "Remote").target`},
+		{"step", "[[packages.steps]]\nop = \"touch\"\npath = \"../escape\"", `package(name: "Remote").steps[1].path`},
 		{"layout", "[layout]\ndirs = [\"../escape\"]", "layout.dirs[1]"},
 		{"verify", "[verify]\nfiles = [\"../escape\"]", "verify.files[1]"},
 		{"build info", "[build]\nbuild_info = \"../escape\"", "build.build_info"},
@@ -423,7 +423,7 @@ asset = "other"
 	rewriteBuildManifestPaths(t, filepath.Join(root, "kit.toml"), sourceDir, outputDir)
 	rewriteMainTestFileForBuild(t, filepath.Join(root, "kit.toml"), "URL", "url:"+server.URL+"/payload.bin")
 	_, err := Build(Options{ConfigPath: filepath.Join(root, "kit.toml"), Version: "test"})
-	if err == nil || !strings.Contains(err.Error(), "packages[1].assets") {
+	if err == nil || !strings.Contains(err.Error(), `package(name: "Remote").assets`) {
 		t.Fatalf("expected URL asset cardinality error, got %v", err)
 	}
 	if requests.Load() != 0 {

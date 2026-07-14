@@ -45,7 +45,7 @@ source = "file:missing.bin"
 target = "../outside.bin"
 `
 			},
-			want: []string{"packages[1].target", "path escapes base directory"},
+			want: []string{`package(name: "Bad target").target`, "path escapes base directory"},
 		},
 		{
 			name: "step traversal",
@@ -59,7 +59,7 @@ from = "../outside.bin"
 to = "output/file.bin"
 `
 			},
-			want: []string{"packages[1].steps[1].from", "path escapes base directory"},
+			want: []string{`package(name: "Bad step").steps[1].from`, "path escapes base directory"},
 		},
 		{
 			name: "layout traversal",

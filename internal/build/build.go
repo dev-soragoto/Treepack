@@ -16,24 +16,27 @@ import (
 )
 
 type Options struct {
-	ConfigPath  string
-	Source      string
-	Output      string
-	WorkDir     string
-	KeepWork    bool
-	RawArchive  bool
-	Retries     int
-	GitHubToken string
-	Proxy       string
-	Version     string
-	Logger      *logging.Logger
-	Progress    io.Writer
+	ConfigPath   string
+	Source       string
+	Output       string
+	WorkDir      string
+	KeepWork     bool
+	DisableCache bool
+	RawArchive   bool
+	Retries      int
+	GitHubToken  string
+	Proxy        string
+	Version      string
+	Logger       *logging.Logger
+	Progress     io.Writer
 }
+
+const DefaultRetries = 3
 
 // Build 根据配置和命令行覆盖项完成资源解析、安装、校验、发布和归档。
 func Build(options Options) (*report.BuildReport, error) {
 	if options.Retries == 0 {
-		options.Retries = 3
+		options.Retries = DefaultRetries
 	}
 	if options.Retries < 1 {
 		return nil, fmt.Errorf("download retries must be at least 1")
@@ -61,6 +64,13 @@ func Build(options Options) (*report.BuildReport, error) {
 		return rep, err
 	}
 	paths.RunDir = runDir
+	if logger != nil && (paths.WorkBase == "" || options.DisableCache) {
+		reason := "no stable work root"
+		if options.DisableCache {
+			reason = "disabled by option"
+		}
+		logger.Info("cache disabled: %s", reason)
+	}
 	paths.StagedOutput = filepath.Join(paths.RunDir, "output")
 	rep.Paths = paths
 	if logger != nil {
@@ -91,6 +101,9 @@ func Build(options Options) (*report.BuildReport, error) {
 		FS:       fs,
 		Logger:   logger,
 	}
+	if paths.WorkBase != "" && !options.DisableCache {
+		ctx.CacheDir = filepath.Join(paths.WorkBase, "cache")
+	}
 	if err := preflightBuild(ctx); err != nil {
 		return rep, err
 	}
@@ -107,6 +120,20 @@ func Build(options Options) (*report.BuildReport, error) {
 		}
 		ctx.HTTPClient = client
 	}
+	if err := installPackages(ctx); err != nil {
+		return rep, err
+	}
+	if err := finishBuild(ctx); err != nil {
+		return rep, err
+	}
+	if rep.HasRequiredFailures() {
+		return rep, fmt.Errorf("required build step failed")
+	}
+	return finalizeOutput(ctx)
+}
+
+func installPackages(ctx *BuildContext) error {
+	m, paths, rep, logger := ctx.Manifest, ctx.Paths, ctx.Report, ctx.Logger
 	for i, pkg := range m.Packages {
 		if logger != nil {
 			logger.Info("resolving package: %s", pkg.Name)
@@ -119,6 +146,7 @@ func Build(options Options) (*report.BuildReport, error) {
 			logger.Info("package downloads: %s", downloadDir)
 		}
 		packageOutputDir, err := installPackage(installRequest{
+			Context:     ctx,
 			Package:     pkg,
 			SourceDir:   ctx.Paths.SourceRoot,
 			DownloadDir: downloadDir,
@@ -152,15 +180,20 @@ func Build(options Options) (*report.BuildReport, error) {
 		record.OK = true
 		rep.Packages = append(rep.Packages, record)
 		if err := ctx.FS.CopyTreeContents(packageOutputDir, ctx.Paths.StagedOutput); err != nil {
-			return rep, err
+			return err
 		}
 		if logger != nil {
 			logger.Key("merged package: %s -> %s", packageOutputDir, ctx.Paths.StagedOutput)
 		}
 	}
+	return nil
+}
+
+func finishBuild(ctx *BuildContext) error {
+	m, rep, logger := ctx.Manifest, ctx.Report, ctx.Logger
 	if !rep.HasRequiredFailures() {
 		if err := createLayout(m, ctx.Paths.StagedOutput); err != nil {
-			return rep, err
+			return err
 		}
 		if logger != nil {
 			logger.Info("running verification")
@@ -181,12 +214,9 @@ func Build(options Options) (*report.BuildReport, error) {
 		logger.Info("writing reports")
 	}
 	if err := writeReports(ctx); err != nil {
-		return rep, err
+		return err
 	}
-	if rep.HasRequiredFailures() {
-		return rep, fmt.Errorf("required build step failed")
-	}
-	return finalizeOutput(ctx)
+	return nil
 }
 
 // usesGitHub 判断清单中是否包含 GitHub release 类型的包来源。

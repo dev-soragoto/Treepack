@@ -114,10 +114,10 @@ func Load(path string) (*Manifest, error) {
 
 // validatePackage 校验单个包配置并补齐包级默认值。
 func validatePackage(p *PackageConfig, index int) error {
-	ctx := fmt.Sprintf("packages[%d]", index)
 	if p.Name == "" {
-		return fmt.Errorf("%s.name is required", ctx)
+		return fmt.Errorf("package(position: %d).name is required", index)
 	}
+	ctx := fmt.Sprintf("package(name: %q)", p.Name)
 	if p.Source == "" {
 		return fmt.Errorf("%s.source is required", ctx)
 	}

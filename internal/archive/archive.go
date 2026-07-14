@@ -410,11 +410,6 @@ func writeZip(sourceDir string, writer *zip.Writer, options Options) error {
 	return writer.Close()
 }
 
-// isRealDir 判断文件信息是否表示真实目录而不是其他目录类特殊项。
-func isRealDir(info os.FileInfo) bool {
-	return info.IsDir() && info.Mode()&os.ModeType == os.ModeDir
-}
-
 // skipDefaultArchiveEntry identifies common desktop metadata that should not be included in generated archives.
 func skipDefaultArchiveEntry(name string, kind fsutil.EntryKind) bool {
 	if kind == fsutil.EntryDir {

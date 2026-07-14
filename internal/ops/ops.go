@@ -212,7 +212,7 @@ func copyRegexOneLevel(src, pattern, dst string, fs FS) error {
 		}
 	}
 	if !matched {
-		return os.ErrNotExist
+		return fmt.Errorf("cp_regex %q matched no entries in source directory %s", pattern, src)
 	}
 	return nil
 }

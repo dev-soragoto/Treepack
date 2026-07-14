@@ -17,4 +17,5 @@ type BuildContext struct {
 	Logger      *logging.Logger
 	HTTPClient  *http.Client
 	ArchivePath string
+	CacheDir    string
 }
